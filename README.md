@@ -73,44 +73,42 @@
 
 ### 3 步搞定
 
-**第 1 步：放到任意目录**
+**第 1 步：克隆项目**
 
 ```bash
-# 把整个 office-tools-mcp 文件夹拷贝到电脑上
-# 比如放到 /Users/你的用户名/projects/ 下面
+git clone https://github.com/xhj-cloud/office-tool.git
+cd office-tool
 ```
 
 **第 2 步：安装依赖**
 
 ```bash
-cd office-tools-mcp              # 进入目录
-python3 -m venv venv             # 创建虚拟环境
-./venv/bin/pip install -r requirements.txt   # 安装依赖（约 30 秒）
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
 ```
 
-> Windows 用户把 `./venv/bin/pip` 换成 `venv\Scripts\pip`
+> Windows: `venv\Scripts\pip install -r requirements.txt`
 
 **第 3 步：配置到 AI 工具**
 
 <details>
-<summary>🔹 如果你用 CherryStudio</summary>
+<summary>🔹 CherryStudio</summary>
 
-打开 CherryStudio → 左下角 **设置** → **MCP 服务器** → **添加**：
+设置 → MCP 服务器 → 添加：
 
-| 配置项 | 填什么 |
-|--------|--------|
+| 配置项 | 值 |
+|--------|-----|
 | 名称 | `office-tools` |
 | 传输类型 | `stdio` |
-| 命令 | 选 `venv/bin/python`（在你的项目目录里） |
-| 参数 | `server.py`（在你的项目目录里） |
+| 命令 | 选择项目目录下的 `venv/bin/python` |
+| 参数 | `server.py` |
 
-保存，打开开关，重启 CherryStudio。
 </details>
 
 <details>
-<summary>🔹 如果你用 Claude CLI</summary>
+<summary>🔹 Claude CLI</summary>
 
-编辑 `~/.claude/mcp.json`，写入：
+编辑 `~/.claude/mcp.json`：
 
 ```json
 {
@@ -124,52 +122,20 @@ python3 -m venv venv             # 创建虚拟环境
 }
 ```
 
-重启 Claude CLI。
 </details>
 
-### 验证是否装好
-
-在 AI 对话框里说：
+### 验证
 
 > "列出我桌面的文件"
 
-如果能返回桌面文件列表，就成功了。
-
----
-
-## 项目结构
-
-```
-office-tools-mcp/
-├── README.md               ← 你正在看的文件
-├── DEPLOY.md               ← 详细部署文档（含 Windows 说明、常见问题）
-├── server.py               ← MCP 服务主程序
-├── requirements.txt        ← Python 依赖清单
-├── start.sh                ← 快捷启动脚本
-├── tools/                  ← 工具实现
-│   ├── word_tools.py        # Word 读写
-│   ├── excel_tools.py       # Excel 读写
-│   ├── ppt_tools.py         # PPT 读写
-│   └── filesystem_tools.py  # 文件系统操作
-└── scripts/                ← 辅助脚本
-    ├── gen_contract.py      # 合同自动生成
-    └── github-mcp.sh       # GitHub MCP 启动
-```
+返回文件列表即成功。
 
 ---
 
 ## 常见问题
 
-**Q: AI 说"无法访问桌面"？**
+**Q: AI 说"无法访问桌面"？** 给完整绝对路径：`/Users/xxx/Desktop/文件.docx`
 
-不是技术问题，是 AI 太谨慎了。给完整绝对路径就行：
-> ❌ "读桌面的合同"
-> ✅ "读 /Users/xxx/Desktop/合同.docx"
+**Q: 启动报 connection closed？** 检查 Python ≥ 3.10，确保依赖全部装完。
 
-**Q: 启动报 connection closed？**
-
-检查 Python 版本（需 ≥ 3.10），确认 `pip install -r requirements.txt` 全部装完没报错。
-
-**Q: 想自己加新功能？**
-
-在 `tools/` 下新建 `.py`，在 `server.py` 里用 `@mcp.tool()` 注册。
+**Q: 想加新功能？** 在 `tools/` 下新建 `.py`，在 `server.py` 用 `@mcp.tool()` 注册。
