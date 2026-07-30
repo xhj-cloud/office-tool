@@ -7,6 +7,7 @@ import json
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
+from .json_repair import safe_parse_json
 
 
 def _get_cell_value(cell):
@@ -112,10 +113,9 @@ def write_xlsx(spec_json: str) -> str:
         ]
     }
     """
-    try:
-        spec = json.loads(spec_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({"error": f"JSON 解析失败: {str(e)}"}, ensure_ascii=False)
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
 
     output_path = spec.get("output")
     if not output_path:

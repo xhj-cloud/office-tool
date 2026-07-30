@@ -8,6 +8,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt, Cm, Emu
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.dml.color import RGBColor
+from .json_repair import safe_parse_json
 
 
 def read_pptx(file_path: str, mode: str = "full") -> str:
@@ -102,10 +103,9 @@ def write_pptx(spec_json: str) -> str:
         ]
     }
     """
-    try:
-        spec = json.loads(spec_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({"error": f"JSON 解析失败: {str(e)}"}, ensure_ascii=False)
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
 
     output_path = spec.get("output")
     if not output_path:

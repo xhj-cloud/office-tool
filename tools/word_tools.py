@@ -6,6 +6,7 @@ Word 文档读写工具
 import io
 import json
 from docx import Document
+from .json_repair import safe_parse_json
 from docx.shared import Pt, Cm, Inches, RGBColor, Emu
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -218,10 +219,9 @@ def write_docx(spec_json: str) -> str:
         ]
     }
     """
-    try:
-        spec = json.loads(spec_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({"error": f"JSON 解析失败: {str(e)}"}, ensure_ascii=False)
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
 
     output_path = spec.get("output")
     if not output_path:
