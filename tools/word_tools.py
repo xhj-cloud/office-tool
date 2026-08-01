@@ -335,3 +335,122 @@ def write_docx(spec_json: str) -> str:
 
     doc.save(output_path)
     return json.dumps({"success": True, "output": output_path}, ensure_ascii=False)
+
+
+# ═══════════════════════════════════════════════════
+# 编辑功能（修改已有 .docx 文件）
+# ═══════════════════════════════════════════════════
+
+def _replace_in_paragraph(p, find, replace):
+    """在段落内查找替换文本，保留首个 run 的格式"""
+    if find not in p.text:
+        return False
+    new_text = p.text.replace(find, replace)
+    if p.runs:
+        p.runs[0].text = new_text
+        for r in p.runs[1:]:
+            r.text = ""
+    else:
+        p.add_run(new_text)
+    return True
+
+
+def _set_paragraph_text(p, text):
+    """替换整个段落文本（保留首个 run 格式）"""
+    if p.runs:
+        p.runs[0].text = text
+        for r in p.runs[1:]:
+            r.text = ""
+    else:
+        p.add_run(text)
+
+
+def _delete_paragraph(p):
+    """删除段落"""
+    p._element.getparent().remove(p._element)
+
+
+def edit_docx(file_path: str, spec_json: str) -> str:
+    """
+    编辑已有 Word 文档（.docx）
+
+    spec_json 格式:
+    {
+        "output": "/path/to/output.docx",     // 可选，不指定则覆盖原文件
+        "operations": [
+            {"op": "replace_all", "find": "旧文字", "replace": "新文字"},             // 全局查找替换（段落+表格）
+            {"op": "insert_paragraph", "index": 3, "text": "新段落", "bold": false},  // 在第 index 段之前插入
+            {"op": "delete_paragraph", "index": 5},                                   // 删除指定段落
+            {"op": "set_paragraph_text", "index": 2, "text": "新文本"},                // 替换指定段落文本
+            {"op": "add_paragraph", "text": "末尾追加", "bold": true},                 // 文档末尾追加段落
+            {"op": "set_table_cell", "table_index": 0, "row": 1, "col": 0, "text": "新值"}  // 修改表格单元格
+        ]
+    }
+    """
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
+
+    try:
+        doc = Document(file_path)
+    except Exception as e:
+        return json.dumps({"error": f"无法打开文件: {str(e)}"}, ensure_ascii=False)
+
+    ops = spec.get("operations", [])
+    if not ops:
+        return json.dumps({"error": "operations 不能为空"}, ensure_ascii=False)
+
+    para_count = len(doc.paragraphs)
+
+    for op in ops:
+        kind = op.get("op")
+        try:
+            if kind == "replace_all":
+                find, replace = op.get("find", ""), op.get("replace", "")
+                for p in doc.paragraphs:
+                    _replace_in_paragraph(p, find, replace)
+                for t in doc.tables:
+                    for row in t.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                _replace_in_paragraph(p, find, replace)
+
+            elif kind == "insert_paragraph":
+                idx = op.get("index", 0)
+                if 0 <= idx < para_count:
+                    p = doc.paragraphs[idx].insert_paragraph_before()
+                else:
+                    p = doc.add_paragraph()
+                run = p.add_run(op.get("text", ""))
+                _set_cn_font(run, "宋体", 12, bold=op.get("bold", False))
+
+            elif kind == "delete_paragraph":
+                idx = op.get("index", 0)
+                if 0 <= idx < para_count:
+                    _delete_paragraph(doc.paragraphs[idx])
+
+            elif kind == "set_paragraph_text":
+                idx = op.get("index", 0)
+                if 0 <= idx < para_count:
+                    _set_paragraph_text(doc.paragraphs[idx], op.get("text", ""))
+
+            elif kind == "add_paragraph":
+                _add_paragraph(doc, op.get("text", ""), bold=op.get("bold", False))
+
+            elif kind == "set_table_cell":
+                ti = op.get("table_index", 0)
+                if ti < len(doc.tables):
+                    table = doc.tables[ti]
+                    r, c = op.get("row", 0), op.get("col", 0)
+                    if r < len(table.rows) and c < len(table.columns):
+                        table.rows[r].cells[c].text = op.get("text", "")
+
+            else:
+                return json.dumps({"error": f"未知操作: {kind}"}, ensure_ascii=False)
+
+        except Exception as e:
+            return json.dumps({"error": f"操作 '{kind}' 执行失败: {str(e)}"}, ensure_ascii=False)
+
+    output_path = spec.get("output", file_path)
+    doc.save(output_path)
+    return json.dumps({"success": True, "output": output_path}, ensure_ascii=False)

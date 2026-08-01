@@ -200,3 +200,96 @@ def write_pptx(spec_json: str) -> str:
 
     prs.save(output_path)
     return json.dumps({"success": True, "output": output_path, "slide_count": len(prs.slides)}, ensure_ascii=False)
+
+
+def _replace_in_text_frame(tf, find, replace):
+    """在文本框内查找替换文本"""
+    for para in tf.paragraphs:
+        for run in para.runs:
+            if find in run.text:
+                run.text = run.text.replace(find, replace)
+
+
+def edit_pptx(file_path: str, spec_json: str) -> str:
+    """
+    编辑已有 PowerPoint 文件（.pptx）
+
+    spec_json 格式:
+    {
+        "output": "/path/to/output.pptx",   // 可选，不指定则覆盖原文件
+        "operations": [
+            {"op": "replace_all", "find": "旧", "replace": "新"},       // 全局替换所有形状/表格文本
+            {"op": "set_slide_title", "slide": 1, "text": "新标题"},    // 修改指定页标题
+            {"op": "add_slide", "layout": 6, "title": "标题", "bullets": ["要点1","要点2"]},  // 添加幻灯片
+            {"op": "delete_slide", "slide": 2}                          // 删除指定页
+        ]
+    }
+    """
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
+
+    try:
+        prs = Presentation(file_path)
+    except Exception as e:
+        return json.dumps({"error": f"无法打开文件: {str(e)}"}, ensure_ascii=False)
+
+    for op in spec.get("operations", []):
+        kind = op.get("op")
+        try:
+            if kind == "replace_all":
+                find, replace = op.get("find", ""), op.get("replace", "")
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if shape.has_text_frame:
+                            _replace_in_text_frame(shape.text_frame, find, replace)
+                        if getattr(shape, "has_table", False) and shape.has_table:
+                            for row in shape.table.rows:
+                                for cell in row.cells:
+                                    _replace_in_text_frame(cell.text_frame, find, replace)
+
+            elif kind == "set_slide_title":
+                idx = op.get("slide", 1) - 1
+                if 0 <= idx < len(prs.slides):
+                    slide = prs.slides[idx]
+                    if slide.shapes.title:
+                        slide.shapes.title.text = op.get("text", "")
+
+            elif kind == "add_slide":
+                layout_idx = op.get("layout", 6)
+                slide_layout = prs.slide_layouts[layout_idx]
+                slide = prs.slides.add_slide(slide_layout)
+                if op.get("title") and slide.shapes.title:
+                    slide.shapes.title.text = op["title"]
+                if op.get("bullets"):
+                    body = None
+                    for shape in slide.shapes:
+                        if shape.has_text_frame and shape != slide.shapes.title:
+                            body = shape
+                            break
+                    if body:
+                        tf = body.text_frame
+                        tf.clear()
+                        for i, b in enumerate(op["bullets"]):
+                            if i == 0:
+                                tf.paragraphs[0].text = b
+                            else:
+                                p = tf.add_paragraph()
+                                p.text = b
+
+            elif kind == "delete_slide":
+                idx = op.get("slide", 1) - 1
+                xml_slides = prs.slides._sldIdLst
+                slides = list(xml_slides)
+                if 0 <= idx < len(slides):
+                    xml_slides.remove(slides[idx])
+
+            else:
+                return json.dumps({"error": f"未知操作: {kind}"}, ensure_ascii=False)
+
+        except Exception as e:
+            return json.dumps({"error": f"操作 '{kind}' 执行失败: {str(e)}"}, ensure_ascii=False)
+
+    output_path = spec.get("output", file_path)
+    prs.save(output_path)
+    return json.dumps({"success": True, "output": output_path}, ensure_ascii=False)

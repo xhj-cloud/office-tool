@@ -185,3 +185,90 @@ def write_xlsx(spec_json: str) -> str:
 
     wb.save(output_path)
     return json.dumps({"success": True, "output": output_path, "sheets": wb.sheetnames}, ensure_ascii=False)
+
+
+def edit_xlsx(file_path: str, spec_json: str) -> str:
+    """
+    编辑已有 Excel 文件（.xlsx / .xlsm）
+
+    spec_json 格式:
+    {
+        "output": "/path/to/output.xlsx",   // 可选，不指定则覆盖原文件
+        "sheet": "Sheet1",                   // 可选，默认第一个 sheet
+        "operations": [
+            {"op": "set_cells", "values": {"A1": "新值", "B2": 123}},      // 批量写单元格值
+            {"op": "set_cell", "cell": "A1", "value": "...", "bold": true, "font_size": 12},
+            {"op": "append_rows", "rows": [["a","b"],["c","d"]]},           // 追加多行
+            {"op": "delete_rows", "start": 2, "count": 3},                  // 删除行
+            {"op": "merge_cells", "range": "A1:C1"},                        // 合并单元格
+            {"op": "unmerge_cells", "range": "A1:C1"},                      // 取消合并
+            {"op": "rename_sheet", "new_name": "新名称"}                     // 重命名当前 sheet
+        ]
+    }
+    """
+    spec, err = safe_parse_json(spec_json)
+    if err:
+        return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
+
+    try:
+        wb = load_workbook(file_path)
+    except Exception as e:
+        return json.dumps({"error": f"无法打开文件: {str(e)}"}, ensure_ascii=False)
+
+    ws_name = spec.get("sheet")
+    if ws_name:
+        if ws_name not in wb.sheetnames:
+            wb.close()
+            return json.dumps({"error": f"Sheet '{ws_name}' 不存在，可用: {wb.sheetnames}"}, ensure_ascii=False)
+        ws = wb[ws_name]
+    else:
+        ws = wb.active
+
+    for op in spec.get("operations", []):
+        kind = op.get("op")
+        try:
+            if kind == "set_cells":
+                for cell_ref, val in op.get("values", {}).items():
+                    ws[cell_ref] = val
+
+            elif kind == "set_cell":
+                cell_ref = op.get("cell")
+                ws[cell_ref] = op.get("value")
+                bold = op.get("bold")
+                fsize = op.get("font_size")
+                if bold is not None or fsize:
+                    ws[cell_ref].font = Font(
+                        bold=bold,
+                        size=fsize,
+                    )
+
+            elif kind == "append_rows":
+                for row_data in op.get("rows", []):
+                    ws.append(row_data)
+
+            elif kind == "delete_rows":
+                ws.delete_rows(op.get("start", 1), op.get("count", 1))
+
+            elif kind == "merge_cells":
+                ws.merge_cells(op.get("range"))
+
+            elif kind == "unmerge_cells":
+                ws.unmerge_cells(op.get("range"))
+
+            elif kind == "rename_sheet":
+                new = op.get("new_name")
+                if new and new not in wb.sheetnames:
+                    ws.title = new
+
+            else:
+                wb.close()
+                return json.dumps({"error": f"未知操作: {kind}"}, ensure_ascii=False)
+
+        except Exception as e:
+            wb.close()
+            return json.dumps({"error": f"操作 '{kind}' 执行失败: {str(e)}"}, ensure_ascii=False)
+
+    output_path = spec.get("output", file_path)
+    wb.save(output_path)
+    wb.close()
+    return json.dumps({"success": True, "output": output_path}, ensure_ascii=False)
