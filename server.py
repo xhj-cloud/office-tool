@@ -51,9 +51,28 @@ def read_docx(file_path: str, mode: str = "full") -> str:
 
 
 @mcp.tool()
-def write_docx(spec_json: str) -> str:
-    """根据 JSON 规格生成 Word 文档。支持标题、段落、表格、分页、签署页。"""
-    return _write_docx(spec_json)
+def write_docx(output: str, content_json: str = "[]", title: str = "",
+               body_font: str = "宋体", heading_font: str = "黑体") -> str:
+    """生成 Word 文档(.docx)。支持标题、段落、表格、分页、签署页。
+
+    Args:
+        output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/文档.docx
+        content_json: 正文内容 JSON 数组，每项格式:
+            {"type":"heading","text":"第一条 标题"}
+            {"type":"paragraph","text":"正文","indent":true}
+            {"type":"empty"}
+            {"type":"table","headers":["序号","名称"],"rows":[["1","项目A"],["","合计"]],"widths":[2,5]}
+            {"type":"page_break"}
+            {"type":"signature","left":{"party":"甲方","rep":"______"},"right":{"party":"乙方","rep":"张三"}}
+        title: 文档标题（可选）
+        body_font: 正文字体（默认宋体）
+        heading_font: 标题字体（默认黑体）
+    """
+    spec = {"output": output, "body_font": body_font, "heading_font": heading_font}
+    if title:
+        spec["title"] = title
+    spec["content"] = json.loads(content_json) if content_json else []
+    return _write_docx(json.dumps(spec, ensure_ascii=False))
 
 
 @mcp.tool()
@@ -74,9 +93,17 @@ def read_xlsx(file_path: str, sheet_name: str = "", mode: str = "full") -> str:
 
 
 @mcp.tool()
-def write_xlsx(spec_json: str) -> str:
-    """根据 JSON 规格生成 Excel 文件。支持多 Sheet、表头格式、合并单元格、冻结窗格。"""
-    return _write_xlsx(spec_json)
+def write_xlsx(output: str, sheets_json: str = "[{\"name\":\"Sheet1\",\"headers\":[\"A\"],\"rows\":[[\"\"]]}]") -> str:
+    """生成 Excel 文件(.xlsx)。支持多 Sheet、表头格式、合并单元格、冻结窗格。
+
+    Args:
+        output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/表格.xlsx
+        sheets_json: Sheet 定义 JSON 数组，每项格式:
+            {"name":"Sheet1","headers":["序号","名称","金额"],"rows":[["1","交换机",3995]],"col_widths":[8,30,15],"freeze":"A2"}
+    """
+    spec = {"output": output}
+    spec["sheets"] = json.loads(sheets_json) if sheets_json else []
+    return _write_xlsx(json.dumps(spec, ensure_ascii=False))
 
 
 @mcp.tool()
@@ -96,9 +123,20 @@ def read_pptx(file_path: str, mode: str = "full") -> str:
 
 
 @mcp.tool()
-def write_pptx(spec_json: str) -> str:
-    """根据 JSON 规格生成 PowerPoint 演示文稿。支持标题、副标题、要点列表、数据表格。"""
-    return _write_pptx(spec_json)
+def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标题\"}]") -> str:
+    """生成 PowerPoint 演示文稿(.pptx)。支持标题、副标题、要点列表、数据表格。
+
+    Args:
+        output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/演示.pptx
+        slides_json: 幻灯片 JSON 数组，每项格式:
+            {"layout":0,"title":"标题页","subtitle":"副标题"}
+            {"layout":1,"title":"内容页","bullets":["要点1","要点2"]}
+            {"layout":6,"title":"数据页","table":{"headers":["指标","Q1"],"rows":[["营收","100万"]]}}
+            layout: 0=标题页 1=标题+内容 6=空白页
+    """
+    spec = {"output": output}
+    spec["slides"] = json.loads(slides_json) if slides_json else []
+    return _write_pptx(json.dumps(spec, ensure_ascii=False))
 
 
 @mcp.tool()
