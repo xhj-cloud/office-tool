@@ -164,6 +164,66 @@ office-tool/
 
 ---
 
+## Windows 部署指南
+
+### 前提准备
+
+1. **安装 Python 3.10+** — [python.org](https://www.python.org/downloads/)，安装时勾选 `Add Python to PATH`
+2. **安装 Git** — [git-scm.com](https://git-scm.com/download/win)
+
+### 部署步骤
+
+打开 **PowerShell**，逐条执行：
+
+```powershell
+git clone https://github.com/xhj-cloud/office-tool.git
+cd office-tool
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
+```
+
+> PyMuPDF 安装失败？先装 [VC_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe) 后重试。
+
+### 配置 CherryStudio
+
+设置 → MCP 服务器 → 添加：
+
+| 字段 | 值 |
+|------|-----|
+| 名称 | `office-tools` |
+| 传输类型 | `stdio` |
+| 命令 | `C:\Users\你的用户名\office-tool\venv\Scripts\python.exe` |
+| 参数 | `C:\Users\你的用户名\office-tool\server.py` |
+
+> 获取完整路径：项目目录下运行 `(Get-Item .\venv\Scripts\python.exe).FullName`
+
+### 配置 Claude CLI
+
+编辑 `%USERPROFILE%\.claude\mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "office-tools": {
+      "type": "stdio",
+      "command": "C:\\Users\\用户名\\office-tool\\venv\\Scripts\\python.exe",
+      "args": ["C:\\Users\\用户名\\office-tool\\server.py"]
+    }
+  }
+}
+```
+
+### 路径对照
+
+| macOS | Windows |
+|-------|---------|
+| `/Users/xxx/Desktop` | `C:\Users\xxx\Desktop` |
+| `python3` | `python` |
+| `venv/bin/python` | `venv\Scripts\python.exe` |
+| `~/.claude/mcp.json` | `%USERPROFILE%\.claude\mcp.json` |
+
+---
+
 ## 常见问题
 
 **Q: 启动报 `connection closed`？**
