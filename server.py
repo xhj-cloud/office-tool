@@ -24,7 +24,12 @@ from tools.filesystem_tools import (
     move_file as _move_file,
     delete_file as _delete_file,
 )
-from tools.pdf_processor import PDFProcessor
+try:
+    from tools.pdf_processor import PDFProcessor
+    _pdf_available = True
+except ImportError:
+    PDFProcessor = None
+    _pdf_available = False
 
 mcp = FastMCP("office-tools")
 
@@ -32,8 +37,10 @@ mcp = FastMCP("office-tools")
 _pdf_processors: dict[str, PDFProcessor] = {}
 
 
-def _get_pdf_proc(filepath: str) -> PDFProcessor:
+def _get_pdf_proc(filepath: str):
     """获取（或创建）指定 PDF 文件的处理器"""
+    if not _pdf_available:
+        raise RuntimeError("PDF 功能不可用，请安装 PyMuPDF：pip install PyMuPDF>=1.24.0")
     fp = os.path.abspath(filepath)
     if fp not in _pdf_processors:
         _pdf_processors[fp] = PDFProcessor(fp)
