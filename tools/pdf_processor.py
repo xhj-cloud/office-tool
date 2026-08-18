@@ -55,6 +55,13 @@ def _find_cjk_font() -> Optional[str]:
 # 全局 CJK 字体路径
 _CJK_FONT_PATH = _find_cjk_font()
 
+# PyMuPDF base-14 内置字体名：insert_text 的 fontname 若取这些值，
+# 会直接使用内置字体并忽略 fontfile（中文将渲染成点阵且无法提取）
+_BASE14_NAMES = {"helv", "he", "tiro", "cour", "symb", "zadb"}
+
+# 嵌入 CJK 字体文件时使用的非内置别名
+_CJK_FONT_NAME = "cjk"
+
 
 class PDFProcessor:
     """PDF 文件读取、渲染、修改的统一处理器"""
@@ -236,6 +243,10 @@ class PDFProcessor:
             detected_font = font_file or self.cjk_font
             if detected_font and os.path.exists(detected_font):
                 kwargs["fontfile"] = detected_font
+                # fontname 为 base-14 内置名时 PyMuPDF 会忽略 fontfile，
+                # 必须改用非内置别名，CJK 字体文件才会真正嵌入
+                if kwargs["fontname"] in _BASE14_NAMES:
+                    kwargs["fontname"] = _CJK_FONT_NAME
 
         page.insert_text(**kwargs)
         return {
@@ -382,6 +393,8 @@ class PDFProcessor:
         }
         if use_cjk:
             ins["fontfile"] = cjk
+            # 必须指定非 base-14 的字体名，否则 PyMuPDF 用内置 Helvetica、忽略 fontfile
+            ins["fontname"] = _CJK_FONT_NAME
         page.insert_text(**ins)
         return {
             "success": True,
