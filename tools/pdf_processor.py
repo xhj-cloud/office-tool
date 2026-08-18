@@ -102,6 +102,16 @@ class PDFProcessor:
     def page_count(self) -> int:
         return len(self.doc)
 
+    def resolve_page(self, page_num: int):
+        """校验 1-based 页码并返回对应 Page（越界/非法值抛 ValueError）"""
+        if isinstance(page_num, bool) or not isinstance(page_num, int):
+            raise ValueError(f"page_num 必须是整数，收到: {page_num!r}")
+        if not (1 <= page_num <= self.page_count):
+            raise ValueError(
+                f"页码 {page_num} 超出范围（文档共 {self.page_count} 页，有效值 1-{self.page_count}）"
+            )
+        return self.doc[page_num - 1]
+
     def get_info(self) -> dict:
         """获取 PDF 元信息"""
         meta = self.doc.metadata
@@ -120,17 +130,17 @@ class PDFProcessor:
         提取文本
 
         Args:
-            page_range: 页码范围，如 "0-2" 或 "0,2,5" 或 None（全部）
+            page_range: 页码范围（1-based），如 "1-3" 或 "2,5" 或 None（全部）
 
         Returns:
-            [{"page": 0, "text": "..."}, ...]
+            [{"page": 1, "text": "..."}, ...]
         """
         pages = self._parse_page_range(page_range)
         results = []
         for pn in pages:
-            page = self.doc[pn]
+            page = self.doc[pn - 1]
             text = page.get_text()
-            results.append({"page": pn + 1, "text": text})
+            results.append({"page": pn, "text": text})
         return results
 
     # ── 渲染为图片（供视觉 AI 使用） ──────────────────────
@@ -145,12 +155,12 @@ class PDFProcessor:
         将 PDF 页面渲染为 PNG 图片
 
         Args:
-            page_range: 页码范围
+            page_range: 页码范围（1-based），如 "1-5"
             dpi: 渲染分辨率
             output_dir: 如果指定，将图片保存到此目录
 
         Returns:
-            [{"page": 0, "image_path": "...", "width": ..., "height": ...}, ...]
+            [{"page": 1, "image_path": "...", "width": ..., "height": ...}, ...]
         """
         from PIL import Image
 
@@ -160,13 +170,13 @@ class PDFProcessor:
 
         results = []
         for pn in pages:
-            page = self.doc[pn]
+            page = self.doc[pn - 1]
             pix = page.get_pixmap(matrix=mat)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
-                img_path = os.path.join(output_dir, f"page_{pn + 1:04d}.png")
+                img_path = os.path.join(output_dir, f"page_{pn:04d}.png")
                 img.save(img_path)
             else:
                 # 保存到临时文件
@@ -177,7 +187,7 @@ class PDFProcessor:
                 tmp.close()
 
             results.append({
-                "page": pn + 1,
+                "page": pn,
                 "image_path": img_path,
                 "width": pix.width,
                 "height": pix.height,
@@ -202,7 +212,7 @@ class PDFProcessor:
         在指定位置添加文本（自动使用 CJK 字体处理中文）
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             text: 文本内容
             x, y: 坐标（点）
             font_size: 字号
@@ -213,7 +223,7 @@ class PDFProcessor:
         Returns:
             {"success": bool, ...}
         """
-        page = self.doc[page_num]
+        page = self.resolve_page(page_num)
         kwargs = {
             "point": fitz.Point(x, y),
             "text": text,
@@ -230,7 +240,7 @@ class PDFProcessor:
         page.insert_text(**kwargs)
         return {
             "success": True,
-            "page": page_num + 1,
+            "page": page_num,
             "action": "add_text",
             "position": (x, y),
             "text": text,
@@ -246,20 +256,20 @@ class PDFProcessor:
         遮盖（涂黑）指定区域
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             rect: 矩形区域 (x0, y0, x1, y1)，单位：点
             fill_color: 填充颜色，默认黑色
 
         Returns:
             {"success": bool, ...}
         """
-        page = self.doc[page_num]
+        page = self.resolve_page(page_num)
         r = fitz.Rect(*rect)
         annot = page.add_redact_annot(r, fill=fill_color)
         page.apply_redactions(images=2)  # images=2 彻底移除与遮盖区域重叠的图像
         return {
             "success": True,
-            "page": page_num + 1,
+            "page": page_num,
             "action": "redact",
             "rect": rect,
         }
@@ -275,19 +285,19 @@ class PDFProcessor:
         高亮标注区域
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             rect: 矩形区域
             color: RGB 颜色（0-1 范围）
             opacity: 透明度
         """
-        page = self.doc[page_num]
+        page = self.resolve_page(page_num)
         annot = page.add_highlight_annot(fitz.Rect(*rect))
         annot.set_colors(stroke=color)
         annot.set_opacity(opacity)
         annot.update()
         return {
             "success": True,
-            "page": page_num + 1,
+            "page": page_num,
             "action": "highlight",
             "rect": rect,
         }
@@ -304,13 +314,13 @@ class PDFProcessor:
         添加矩形标注框
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             rect: 矩形区域
             text: 标注文本
             color: RGB（0-1）
             width: 线宽
         """
-        page = self.doc[page_num]
+        page = self.resolve_page(page_num)
         annot = page.add_rect_annot(fitz.Rect(*rect))
         annot.set_colors(stroke=color)
         annot.set_border(width=width)
@@ -319,7 +329,7 @@ class PDFProcessor:
         annot.update()
         return {
             "success": True,
-            "page": page_num + 1,
+            "page": page_num,
             "action": "rect_annot",
             "rect": rect,
         }
@@ -337,14 +347,14 @@ class PDFProcessor:
         替换指定区域内的文本（遮盖旧文本 + 写入新文本）
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             bbox: 目标矩形区域 (x0, y0, x1, y1)
             new_text: 新文本
             font_size: 字号
             color: RGB 颜色 (0-1)
             font_file: 字体文件，默认自动使用系统 CJK 字体
         """
-        page = self.doc[page_num]
+        page = self.resolve_page(page_num)
         r = fitz.Rect(*bbox)
 
         # 1. 遮盖旧文本
@@ -375,7 +385,7 @@ class PDFProcessor:
         page.insert_text(**ins)
         return {
             "success": True,
-            "page": page_num + 1,
+            "page": page_num,
             "action": "replace_text",
             "bbox": bbox,
             "new_text": new_text,
@@ -392,7 +402,7 @@ class PDFProcessor:
         应用 AI 返回的修改指令
 
         Args:
-            page_num: 页码（0-based）
+            page_num: 页码（从 1 开始）
             modifications: AI 返回的修改指令列表
             page_width, page_height: 页面尺寸（点）
 
@@ -468,7 +478,7 @@ class PDFProcessor:
         暗区（文字/印章）不受影响。
 
         Args:
-            page_range: 页码范围，如 '0-2'，留空处理所有页
+            page_range: 页码范围（1-based），如 '1-3'，留空处理所有页
             dpi: 渲染分辨率（默认 200）
             strength: 去黄强度 0-1（默认 0.95）
             threshold: 亮度阈值，高于此值视为纸张（默认 120）
@@ -484,7 +494,7 @@ class PDFProcessor:
         results = []
 
         for pn in pages:
-            page = self.doc[pn]
+            page = self.doc[pn - 1]
             page_rect = page.rect
             zoom = dpi / 72
             mat = fitz.Matrix(zoom, zoom)
@@ -528,7 +538,7 @@ class PDFProcessor:
             page.insert_image(page_rect, stream=img_bytes.read())
 
             results.append({
-                "page": pn + 1,
+                "page": pn,
                 "original_rgb": f"({r.mean():.0f},{g.mean():.0f},{b.mean():.0f})",
                 "corrected_rgb": f"({arr[:,:,0].mean():.0f},{arr[:,:,1].mean():.0f},{arr[:,:,2].mean():.0f})",
             })
@@ -566,18 +576,36 @@ class PDFProcessor:
         return output_path
 
     def _parse_page_range(self, page_range: Optional[str]) -> list[int]:
-        """解析页码范围字符串"""
-        if page_range is None:
-            return list(range(self.page_count))
+        """解析页码范围字符串（1-based，如 "1-3"、"2,5"）
 
-        pages = set()
-        for part in page_range.split(","):
+        越界或格式非法时抛 ValueError（不再静默丢弃）。
+        """
+        if page_range is None or not str(page_range).strip():
+            return list(range(1, self.page_count + 1))
+
+        total = self.page_count
+        pages: set[int] = set()
+        for part in str(page_range).split(","):
             part = part.strip()
-            if "-" in part:
-                start, end = part.split("-", 1)
-                pages.update(range(int(start), int(end) + 1))
-            else:
-                pages.add(int(part))
+            if not part:
+                continue
+            try:
+                if "-" in part:
+                    start_s, end_s = part.split("-", 1)
+                    start, end = int(start_s), int(end_s)
+                    if start > end:
+                        raise ValueError(f"范围起始大于结束: {part!r}")
+                    pages.update(range(start, end + 1))
+                else:
+                    pages.add(int(part))
+            except ValueError as e:
+                raise ValueError(
+                    f"无法解析页码片段 {part!r}: {e}（格式如 '1-3'、'2,5'，页码从 1 开始）"
+                ) from None
 
-        # 限制在有效范围内
-        return sorted([p for p in pages if 0 <= p < self.page_count])
+        bad = sorted(p for p in pages if not (1 <= p <= total))
+        if bad:
+            raise ValueError(
+                f"页码超出范围: {bad}（文档共 {total} 页，有效值 1-{total}）"
+            )
+        return sorted(pages)

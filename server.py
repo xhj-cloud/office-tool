@@ -6,6 +6,7 @@ Office & Filesystem & PDF Tools MCP Server
 使用: python server.py   (stdio 模式，CherryStudio / Claude CLI 连接)
 """
 
+import functools
 import json
 import os
 
@@ -47,6 +48,20 @@ def _get_pdf_proc(filepath: str):
     return _pdf_processors[fp]
 
 
+def _pdf_tool(fn):
+    """PDF 工具统一错误处理：把异常转为 JSON 错误返回，避免裸 traceback"""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": f"{type(e).__name__}: {e}",
+            }, ensure_ascii=False)
+    return wrapper
+
+
 # ═══════════════════════════════════════════
 # Word
 # ═══════════════════════════════════════════
@@ -84,7 +99,7 @@ def write_docx(output: str, content_json: str = "[]", title: str = "",
 
 @mcp.tool()
 def edit_docx(file_path: str, spec_json: str) -> str:
-    """编辑已有 Word 文档(.docx)。支持全局查找替换、插入/删除段落、修改段落文本、追加段落、修改表格单元格。"""
+    """编辑已有 Word 文档(.docx)。支持全局查找替换、插入/删除段落、修改段落文本、追加段落、修改表格单元格。段落 index 相对于原始文档编号，批量操作互不影响。"""
     return _edit_docx(file_path, spec_json)
 
 
@@ -158,50 +173,50 @@ def edit_pptx(file_path: str, spec_json: str) -> str:
 
 @mcp.tool()
 def list_directory(path: str) -> str:
-    """列出目录下的所有文件和子目录。"""
+    """列出目录下的所有文件和子目录。（路径受白名单限制：OFFICE_TOOLS_ALLOWED_DIRS，默认主目录）"""
     return _list_directory(path)
 
 
 @mcp.tool()
 def read_file(path: str, encoding: str = "utf-8", max_lines: int = 500) -> str:
-    """读取任意文本文件的内容。支持 .txt .md .json .py .csv 等纯文本格式。"""
+    """读取任意文本文件的内容。支持 .txt .md .json .py .csv 等纯文本格式。（路径受白名单限制）"""
     return _read_file(path, encoding, max_lines)
 
 
 @mcp.tool()
 def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
-    """创建或覆盖写入文件（自动创建父目录）。"""
+    """创建或覆盖写入文件（自动创建父目录）。（路径受白名单限制）"""
     return _write_file(path, content, encoding)
 
 
 @mcp.tool()
 def edit_file(path: str, old_string: str, new_string: str,
               encoding: str = "utf-8", replace_all: bool = False) -> str:
-    """编辑文件内容：查找并替换文本。设置 replace_all=true 可替换所有匹配。"""
+    """编辑文件内容：查找并替换文本。设置 replace_all=true 可替换所有匹配。（路径受白名单限制）"""
     return _edit_file(path, old_string, new_string, encoding, replace_all)
 
 
 @mcp.tool()
 def file_info(path: str) -> str:
-    """获取文件或目录的详细信息（大小、修改时间、类型等）。"""
+    """获取文件或目录的详细信息（大小、修改时间、类型等）。（路径受白名单限制）"""
     return _file_info(path)
 
 
 @mcp.tool()
 def create_directory(path: str) -> str:
-    """创建目录（自动创建所有父目录）。"""
+    """创建目录（自动创建所有父目录）。（路径受白名单限制）"""
     return _create_directory(path)
 
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
-    """移动或重命名文件/目录。"""
+    """移动或重命名文件/目录。（路径受白名单限制）"""
     return _move_file(source, destination)
 
 
 @mcp.tool()
 def delete_file(path: str, recursive: bool = False) -> str:
-    """删除文件。设置 recursive=true 可递归删除目录。"""
+    """删除文件。设置 recursive=true 可递归删除目录。（路径受白名单限制，禁止递归删除白名单根目录）"""
     return _delete_file(path, recursive)
 
 
@@ -210,31 +225,34 @@ def delete_file(path: str, recursive: bool = False) -> str:
 # ═══════════════════════════════════════════
 
 @mcp.tool()
+@_pdf_tool
 def pdf_info(filepath: str) -> str:
     """获取 PDF 文件的基本信息（页数、大小、元数据等）"""
     return json.dumps(_get_pdf_proc(filepath).get_info(), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_extract_text(filepath: str, page_range: str = "") -> str:
-    """提取 PDF 中的文本内容。page_range 如 '0-2'、'0,3,5'，留空为全部"""
+    """提取 PDF 中的文本内容。page_range 如 '1-3'、'2,5'（页码从 1 开始），留空为全部"""
     pr = page_range or None
     return json.dumps(_get_pdf_proc(filepath).extract_text(pr), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_render_pages(filepath: str, page_range: str = "", dpi: int = 200, output_dir: str = "") -> str:
-    """将 PDF 页面渲染为图片文件，返回图片路径供视觉 AI 使用。page_range 如 '0-5'，留空渲染所有页"""
+    """将 PDF 页面渲染为图片文件，返回图片路径供视觉 AI 使用。page_range 如 '1-5'（页码从 1 开始），留空渲染所有页"""
     pr = page_range or None
     od = output_dir or None
     return json.dumps(_get_pdf_proc(filepath).render_pages(pr, dpi, od), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_apply_modifications(filepath: str, modifications_json: str, page_num: int = 1) -> str:
-    """【核心功能】将 AI 生成的修改指令应用到 PDF 页面上（自动执行替换、删除、添加等操作）"""
+    """【核心功能】将 AI 生成的修改指令应用到 PDF 页面上（自动执行替换、删除、添加等操作）。page_num 从 1 开始"""
     proc = _get_pdf_proc(filepath)
-    page_idx = page_num - 1
 
     mods = json.loads(modifications_json) if isinstance(modifications_json, str) else modifications_json
     page_objects = mods.get("page_objects", mods.get("raw_response", []))
@@ -248,13 +266,13 @@ def pdf_apply_modifications(filepath: str, modifications_json: str, page_num: in
                 "error": f"无法解析修改指令: {str(page_objects)[:200]}...",
             }, ensure_ascii=False, indent=2)
 
-    page = proc.doc[page_idx]
-    page_rect = page.rect
-    results = proc.apply_ai_modifications(page_idx, page_objects, page_rect.width, page_rect.height)
+    page = proc.resolve_page(page_num)
+    results = proc.apply_ai_modifications(page_num, page_objects, page.rect.width, page.rect.height)
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_save(filepath: str, output_path: str = "") -> str:
     """将修改后的 PDF 保存到文件。output_path 不指定则自动添加 _modified 后缀"""
     op = output_path or None
@@ -267,41 +285,46 @@ def pdf_save(filepath: str, output_path: str = "") -> str:
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_manual_replace_text(filepath: str, page_num: int, bbox: list, new_text: str, font_size: float = 12) -> str:
-    """手动替换 PDF 中指定区域的文本（不需要 AI 参与）。先遮盖再写入新文本。bbox: [x0,y0,x1,y1]（点）"""
+    """手动替换 PDF 中指定区域的文本（不需要 AI 参与）。先遮盖再写入新文本。page_num 从 1 开始；bbox: [x0,y0,x1,y1]（点）"""
     proc = _get_pdf_proc(filepath)
-    result = proc.replace_text_in_bbox(page_num - 1, tuple(bbox), new_text, font_size)
+    result = proc.replace_text_in_bbox(page_num, tuple(bbox), new_text, font_size)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_redact(filepath: str, page_num: int, bbox: list, fill_white: bool = False) -> str:
-    """遮盖（涂黑/涂白）PDF 中的指定区域。bbox: [x0,y0,x1,y1]（点）"""
+    """遮盖（涂黑/涂白）PDF 中的指定区域。page_num 从 1 开始；bbox: [x0,y0,x1,y1]（点）"""
     proc = _get_pdf_proc(filepath)
     fill_color = (1, 1, 1) if fill_white else (0, 0, 0)
-    result = proc.redact_area(page_num - 1, tuple(bbox), fill_color)
+    result = proc.redact_area(page_num, tuple(bbox), fill_color)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_highlight_area(filepath: str, page_num: int, bbox: list) -> str:
-    """高亮标注 PDF 中的指定区域。bbox: [x0,y0,x1,y1]（点）"""
+    """高亮标注 PDF 中的指定区域。page_num 从 1 开始；bbox: [x0,y0,x1,y1]（点）"""
     proc = _get_pdf_proc(filepath)
-    result = proc.add_highlight(page_num - 1, tuple(bbox))
+    result = proc.add_highlight(page_num, tuple(bbox))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_add_text(filepath: str, page_num: int, text: str, x: float, y: float, font_size: float = 12) -> str:
-    """在 PDF 指定位置添加文本（自动支持中文）。x、y 为坐标（点）"""
+    """在 PDF 指定位置添加文本（自动支持中文）。page_num 从 1 开始；x、y 为坐标（点）"""
     proc = _get_pdf_proc(filepath)
-    result = proc.add_text(page_num - 1, text, x, y, font_size)
+    result = proc.add_text(page_num, text, x, y, font_size)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+@_pdf_tool
 def pdf_deyellow(filepath: str, page_range: str = "", dpi: int = 200, strength: float = 0.95, threshold: float = 120) -> str:
-    """【扫描件去黄】去除扫描件 PDF 的黄底，使纸张变白。page_range 如 '0-2'，留空处理所有页"""
+    """【扫描件去黄】去除扫描件 PDF 的黄底，使纸张变白。page_range 如 '1-3'（页码从 1 开始），留空处理所有页"""
     proc = _get_pdf_proc(filepath)
     pr = page_range or None
     result = proc.deyellow(page_range=pr, dpi=dpi, strength=strength, threshold=threshold)

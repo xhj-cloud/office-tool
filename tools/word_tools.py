@@ -370,6 +370,24 @@ def _delete_paragraph(p):
     p._element.getparent().remove(p._element)
 
 
+def _check_para_index(op: dict, n_para: int, allow_append: bool = False):
+    """校验操作中的段落 index（相对原始文档）；返回错误 JSON 字符串或 None"""
+    idx = op.get("index", 0)
+    if isinstance(idx, bool) or not isinstance(idx, int):
+        return json.dumps({"error": f"index 必须是整数: {idx!r}"}, ensure_ascii=False)
+    upper = n_para + (1 if allow_append else 0)
+    if not (0 <= idx < upper):
+        return json.dumps({
+            "error": f"index {idx} 超出范围（原始文档共 {n_para} 段，有效值 0-{upper - 1}）",
+        }, ensure_ascii=False)
+    return None
+
+
+def _para_alive(p) -> bool:
+    """段落是否仍在文档树中（未被之前的操作删除）"""
+    return p._element.getparent() is not None
+
+
 def edit_docx(file_path: str, spec_json: str) -> str:
     """
     编辑已有 Word 文档（.docx）
@@ -386,6 +404,9 @@ def edit_docx(file_path: str, spec_json: str) -> str:
             {"op": "set_table_cell", "table_index": 0, "row": 1, "col": 0, "text": "新值"}  // 修改表格单元格
         ]
     }
+
+    注意：所有段落 index 均相对于文档初始状态（与 read_docx 返回的编号一致），
+    不受本批次中前面的插入/删除操作影响。
     """
     spec, err = safe_parse_json(spec_json)
     if err:
@@ -400,7 +421,10 @@ def edit_docx(file_path: str, spec_json: str) -> str:
     if not ops:
         return json.dumps({"error": "operations 不能为空"}, ensure_ascii=False)
 
-    para_count = len(doc.paragraphs)
+    # 原始段落快照：所有 index 均相对于文档初始状态（与 read_docx 编号一致），
+    # 不受本批次中前面的插入/删除操作影响
+    original_paras = list(doc.paragraphs)
+    n_para = len(original_paras)
 
     for op in ops:
         kind = op.get("op")
@@ -416,23 +440,43 @@ def edit_docx(file_path: str, spec_json: str) -> str:
                                 _replace_in_paragraph(p, find, replace)
 
             elif kind == "insert_paragraph":
+                err = _check_para_index(op, n_para, allow_append=True)
+                if err:
+                    return err
                 idx = op.get("index", 0)
-                if 0 <= idx < para_count:
-                    p = doc.paragraphs[idx].insert_paragraph_before()
+                if idx < n_para:
+                    target = original_paras[idx]
+                    if not _para_alive(target):
+                        return json.dumps({
+                            "error": f"段落 index={idx} 已被之前的操作删除，无法在其前插入",
+                        }, ensure_ascii=False)
+                    p = target.insert_paragraph_before()
                 else:
                     p = doc.add_paragraph()
                 run = p.add_run(op.get("text", ""))
                 _set_cn_font(run, "宋体", 12, bold=op.get("bold", False))
 
             elif kind == "delete_paragraph":
-                idx = op.get("index", 0)
-                if 0 <= idx < para_count:
-                    _delete_paragraph(doc.paragraphs[idx])
+                err = _check_para_index(op, n_para)
+                if err:
+                    return err
+                target = original_paras[op.get("index", 0)]
+                if not _para_alive(target):
+                    return json.dumps({
+                        "error": f"段落 index={op.get('index', 0)} 已被之前的操作删除",
+                    }, ensure_ascii=False)
+                _delete_paragraph(target)
 
             elif kind == "set_paragraph_text":
-                idx = op.get("index", 0)
-                if 0 <= idx < para_count:
-                    _set_paragraph_text(doc.paragraphs[idx], op.get("text", ""))
+                err = _check_para_index(op, n_para)
+                if err:
+                    return err
+                target = original_paras[op.get("index", 0)]
+                if not _para_alive(target):
+                    return json.dumps({
+                        "error": f"段落 index={op.get('index', 0)} 已被之前的操作删除",
+                    }, ensure_ascii=False)
+                _set_paragraph_text(target, op.get("text", ""))
 
             elif kind == "add_paragraph":
                 _add_paragraph(doc, op.get("text", ""), bold=op.get("bold", False))

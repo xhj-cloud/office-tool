@@ -49,6 +49,24 @@
 | "读取 app.py 第 20 到 50 行" | 读取文件 |
 | "搜索所有 .log 文件" | 递归搜索 |
 
+### 🔒 安全限制与编号约定
+
+**路径白名单**：文件管理工具的所有路径都受白名单限制，只允许操作允许的目录内。
+
+- 默认仅允许用户主目录；
+- 用环境变量 `OFFICE_TOOLS_ALLOWED_DIRS` 配置多个允许的根目录（macOS/Linux 以 `:` 分隔）：
+
+```bash
+export OFFICE_TOOLS_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"
+```
+
+路径在符号链接解析后校验，无法通过软链接逃逸；禁止递归删除白名单根目录本身。
+
+**编号约定**：
+
+- PDF 所有页码（`page_num`、`page_range`）统一从 **1** 开始，越界会明确报错；
+- `edit_docx` 的段落 `index` 相对于文档初始状态（与 `read_docx` 返回的编号一致），批量操作互不影响。
+
 ---
 
 ## 全部 27 个工具
