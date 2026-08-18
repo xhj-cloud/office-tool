@@ -4,6 +4,7 @@ Excel 电子表格读写工具
 """
 
 import json
+import os
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
@@ -90,6 +91,27 @@ def read_xlsx(file_path: str, sheet_name: str = None, mode: str = "full") -> str
         output["data"] = data
         output["merged_cells"] = merged_cells
 
+    # 检测无缓存值的公式单元格：data_only=True 会把它们读成空，必须明确告知
+    try:
+        wb_f = load_workbook(file_path, data_only=False)
+        ws_f = wb_f[ws.title] if ws.title in wb_f.sheetnames else None
+        if ws_f is not None:
+            uncached = []
+            for row in ws_f.iter_rows(min_row=1, max_row=ws_f.max_row, max_col=ws_f.max_column):
+                for cell in row:
+                    v = cell.value
+                    if isinstance(v, str) and v.startswith("="):
+                        if ws.cell(row=cell.row, column=cell.column).value is None:
+                            uncached.append(f"{cell.coordinate}: {v}")
+            wb_f.close()
+            if uncached:
+                output["uncached_formula_cells"] = {
+                    "note": "以下公式单元格没有缓存值（文件从未在 Excel 中打开计算过），因此读出来是空的",
+                    "cells": uncached,
+                }
+    except Exception:
+        pass  # 检测失败不影响主流程
+
     wb.close()
     return json.dumps(output, ensure_ascii=False, indent=2)
 
@@ -137,12 +159,18 @@ def write_xlsx(spec_json: str) -> str:
         bottom=Side(style="thin", color="999999"),
     )
 
-    for sheet_spec in spec.get("sheets", []):
-        name = sheet_spec.get("name", "Sheet")
-        if len(wb.sheetnames) == 1 and wb.active.title == "Sheet":
+    for i, sheet_spec in enumerate(spec.get("sheets", [])):
+        name = sheet_spec.get("name") or f"Sheet{i + 1}"
+        if i == 0:
+            # 复用默认空 sheet，避免残留多余的 "Sheet"
             ws = wb.active
             ws.title = name
         else:
+            # Excel 不允许同名工作表，重名时自动追加序号（而不是误删用户 sheet）
+            base, n = name, 2
+            while name in wb.sheetnames:
+                name = f"{base}{n}"
+                n += 1
             ws = wb.create_sheet(title=name)
 
         headers = sheet_spec.get("headers", [])
@@ -179,10 +207,6 @@ def write_xlsx(spec_json: str) -> str:
         if sheet_spec.get("freeze"):
             ws.freeze_panes = sheet_spec["freeze"]
 
-    # 删除默认空 sheet
-    if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
-        del wb["Sheet"]
-
     wb.save(output_path)
     return json.dumps({"success": True, "output": output_path, "sheets": wb.sheetnames}, ensure_ascii=False)
 
@@ -210,8 +234,10 @@ def edit_xlsx(file_path: str, spec_json: str) -> str:
     if err:
         return json.dumps({"error": f"JSON 解析失败: {err}"}, ensure_ascii=False)
 
+    # .xlsm/.xlam 含 VBA 宏，必须 keep_vba 加载，否则保存时全部宏代码丢失
+    keep_vba = str(file_path).lower().endswith((".xlsm", ".xlam"))
     try:
-        wb = load_workbook(file_path)
+        wb = load_workbook(file_path, keep_vba=keep_vba)
     except Exception as e:
         return json.dumps({"error": f"无法打开文件: {str(e)}"}, ensure_ascii=False)
 
@@ -237,9 +263,16 @@ def edit_xlsx(file_path: str, spec_json: str) -> str:
                 bold = op.get("bold")
                 fsize = op.get("font_size")
                 if bold is not None or fsize:
+                    # 合并现有字体属性，只覆盖指定的项（避免整体重置丢失字体名/字号等）
+                    old = ws[cell_ref].font
                     ws[cell_ref].font = Font(
-                        bold=bold,
-                        size=fsize,
+                        name=old.name,
+                        size=fsize if fsize else old.size,
+                        bold=bold if bold is not None else old.bold,
+                        italic=old.italic,
+                        underline=old.underline,
+                        strike=old.strike,
+                        color=old.color,
                     )
 
             elif kind == "append_rows":
@@ -269,6 +302,11 @@ def edit_xlsx(file_path: str, spec_json: str) -> str:
             return json.dumps({"error": f"操作 '{kind}' 执行失败: {str(e)}"}, ensure_ascii=False)
 
     output_path = spec.get("output", file_path)
+    if keep_vba and not str(output_path).lower().endswith((".xlsm", ".xlam")):
+        wb.close()
+        return json.dumps({
+            "error": f"源文件含 VBA 宏，不能保存为 {os.path.splitext(str(output_path))[1] or output_path}（会丢失全部宏代码），请指定 .xlsm/.xlam 输出路径",
+        }, ensure_ascii=False)
     wb.save(output_path)
     wb.close()
     return json.dumps({"success": True, "output": output_path}, ensure_ascii=False)
