@@ -9,6 +9,7 @@ Office & Filesystem & PDF Tools MCP Server
 import functools
 import json
 import os
+from collections import OrderedDict
 
 from mcp.server.fastmcp import FastMCP
 
@@ -34,18 +35,29 @@ except ImportError:
 
 mcp = FastMCP("office-tools")
 
-# ── PDF 处理器全局缓存（filepath -> PDFProcessor） ──────
-_pdf_processors: dict[str, PDFProcessor] = {}
+# ── PDF 处理器全局缓存（filepath -> PDFProcessor），LRU 上限防止长驻进程内存无限增长 ──
+_PDF_CACHE_MAX = 32
+_pdf_processors: "OrderedDict[str, PDFProcessor]" = OrderedDict()
 
 
 def _get_pdf_proc(filepath: str):
-    """获取（或创建）指定 PDF 文件的处理器"""
+    """获取（或创建）指定 PDF 文件的处理器；超出 LRU 上限时关闭并丢弃最久未用的条目"""
     if not _pdf_available:
         raise RuntimeError("PDF 功能不可用，请安装 PyMuPDF：pip install PyMuPDF>=1.24.0")
     fp = os.path.abspath(filepath)
-    if fp not in _pdf_processors:
-        _pdf_processors[fp] = PDFProcessor(fp)
-    return _pdf_processors[fp]
+    proc = _pdf_processors.get(fp)
+    if proc is None:
+        while len(_pdf_processors) >= _PDF_CACHE_MAX:
+            old_fp, old_proc = _pdf_processors.popitem(last=False)
+            try:
+                old_proc.close()
+            except Exception:
+                pass
+        proc = PDFProcessor(fp)
+        _pdf_processors[fp] = proc
+    else:
+        _pdf_processors.move_to_end(fp)
+    return proc
 
 
 def _pdf_tool(fn):

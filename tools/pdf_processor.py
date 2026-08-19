@@ -581,6 +581,11 @@ class PDFProcessor:
             base, ext = os.path.splitext(self.filepath)
             output_path = f"{base}_modified{ext}"
 
+        if os.path.abspath(output_path) == os.path.abspath(self.filepath):
+            raise ValueError(
+                "不能保存回源文件（PyMuPDF 不允许覆盖自己打开的文件）。"
+                "请指定其他输出路径，或先关闭该 PDF 再覆盖。")
+
         if incremental:
             self.doc.save(output_path, incremental=True, encryption=0)
         else:
