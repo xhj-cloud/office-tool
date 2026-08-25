@@ -197,3 +197,7 @@ office-tool/
 **Q: PDF 中文乱码？** 程序自动检测系统 CJK 字体，如仍乱码请安装中文字体包。
 
 **Q: PyMuPDF 安装失败？** macOS 可尝试 `brew install mupdf` 后重装，Linux 需 `apt install libmupdf-dev`。
+
+## License / 许可证
+
+本项目采用 [CC BY-NC 4.0](LICENSE)（Creative Commons 署名-非商业性使用 4.0 国际）协议开源：可以自由查看、使用、修改和分发，但**禁止任何商业用途**。
