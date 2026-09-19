@@ -5,6 +5,7 @@ Word 文档读写工具
 
 import io
 import json
+import os
 from docx import Document
 from .json_repair import safe_parse_json
 from docx.shared import Pt, Cm, Inches, RGBColor, Emu
@@ -227,6 +228,14 @@ def write_docx(spec_json: str) -> str:
     if not output_path:
         return json.dumps({"error": "必须指定 output 路径"}, ensure_ascii=False)
 
+    if not spec.get("content"):
+        return json.dumps({"error": "content 不能为空（空数组会生成没有正文的空文档）"}, ensure_ascii=False)
+
+    if os.path.exists(output_path) and not spec.get("overwrite"):
+        return json.dumps(
+            {"error": f"文件已存在: {output_path}。如需覆盖请传 overwrite: true，或换一个输出路径"},
+            ensure_ascii=False)
+
     doc = Document()
 
     # 页面设置
@@ -251,6 +260,13 @@ def write_docx(spec_json: str) -> str:
     body_size = spec.get("body_size", 12)
     heading_font = spec.get("heading_font", "黑体")
     heading_size = spec.get("heading_size", 14)
+
+    # 文档标题（顶层 title 参数；之前被静默忽略，现渲染为居中大标题）
+    if spec.get("title"):
+        _add_paragraph(doc, "", size=body_size)
+        _add_paragraph(doc, spec["title"], font_name=title_font, size=title_size,
+                       bold=True, alignment=WD_ALIGN_PARAGRAPH.CENTER)
+        _add_paragraph(doc, "", size=body_size)
 
     # 渲染内容
     for item in spec.get("content", []):

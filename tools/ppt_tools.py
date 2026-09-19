@@ -4,11 +4,14 @@ PowerPoint 演示文稿读写工具
 """
 
 import json
+import os
+from lxml import etree
 from pptx import Presentation
 from pptx.util import Inches, Pt, Cm, Emu
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.dml.color import RGBColor
+from pptx.oxml.ns import qn
 from .json_repair import safe_parse_json
 
 
@@ -47,6 +50,43 @@ def _add_body_textbox(slide, prs):
     width = int(prs.slide_width * 0.866)
     height = int(prs.slide_height * 0.64)
     return slide.shapes.add_textbox(left, top, width, height)
+
+
+def _add_title_textbox(slide, prs):
+    """无标题占位符时（如空白 layout-6），在顶部添加标题文本框"""
+    left = int(prs.slide_width * 0.067)
+    top = int(prs.slide_height * 0.08)
+    width = int(prs.slide_width * 0.866)
+    height = int(prs.slide_height * 0.16)
+    return slide.shapes.add_textbox(left, top, width, height)
+
+
+def _rgb(color: str):
+    """解析十六进制颜色（可带 #），非法值抛 ValueError"""
+    c = str(color).strip().lstrip("#")
+    if len(c) != 6:
+        raise ValueError(f"颜色值非法: {color!r}（应为 #C8102E 形式的十六进制颜色）")
+    return RGBColor.from_string(c)
+
+
+def _apply_font(paragraph, font_name: str = "微软雅黑", size: float = None,
+                color: str = None, bold: bool = None):
+    """为段落的所有 run 设置字体（含中文 eastAsia 字体）、字号、颜色、加粗"""
+    if not paragraph.runs:
+        paragraph.add_run()
+    for run in paragraph.runs:
+        run.font.name = font_name
+        rPr = run._r.get_or_add_rPr()
+        ea = rPr.find(qn("a:ea"))
+        if ea is None:
+            ea = etree.SubElement(rPr, qn("a:ea"))
+        ea.set("typeface", font_name)
+        if size:
+            run.font.size = Pt(size)
+        if color:
+            run.font.color.rgb = _rgb(color)
+        if bold is not None:
+            run.font.bold = bold
 
 
 def read_pptx(file_path: str, mode: str = "full") -> str:
@@ -124,18 +164,27 @@ def write_pptx(spec_json: str) -> str:
     spec_json 格式:
     {
         "output": "/path/to/output.pptx",
+        "overwrite": false,         // 目标文件已存在时是否覆盖（默认 false，会报错提示）
         "slide_width": 13.33,       // 英寸（16:9 默认）
         "slide_height": 7.5,
         "slides": [
             {
-                "layout": 0,        // 0=标题, 1=标题+内容, 6=空白（默认）
-                "title": "标题文字",
-                "subtitle": "副标题",
+                "layout": 0,        // 0=标题页 1=标题+内容 6=空白（默认）
+                "title": "标题文字",            // 无标题占位符时自动加文本框
+                "subtitle": "副标题",           // 仅标题页（layout 0）有效
                 "bullets": ["要点1", "要点2", "要点3"],
+                "background": "#C8102E",        // 背景色（十六进制，可带 #）
+                "title_color": "#FFD700",       // 标题颜色
+                "title_size": 40,               // 标题字号（默认：标题页 40，其他 32）
+                "bullet_color": "#333333",      // 要点颜色
+                "bullet_size": 18,              // 要点字号（默认 18）
+                "image": {"path": "/a/b/c.png", "left": 1.0, "top": 1.0, "width": 4.0},
+                "notes": "主持人提示 / 时间控制",  // 演讲者备注
                 "table": {
                     "headers": ["列1", "列2"],
                     "rows": [["a", "b"]],
-                    "left": 1.5, "top": 2.0, "width": 7.0, "height": 3.0
+                    "left": 1.5, "top": 2.0, "width": 7.0, "height": 3.0,
+                    "col_widths": [3.5, 3.5]    // 列宽（英寸）
                 }
             }
         ]
@@ -149,6 +198,22 @@ def write_pptx(spec_json: str) -> str:
     if not output_path:
         return json.dumps({"error": "必须指定 output 路径"}, ensure_ascii=False)
 
+    slides = spec.get("slides")
+    if not slides:
+        return json.dumps({"error": "slides 不能为空（空数组会生成 0 页的空 PPT）"}, ensure_ascii=False)
+
+    if os.path.exists(output_path) and not spec.get("overwrite"):
+        return json.dumps(
+            {"error": f"文件已存在: {output_path}。如需覆盖请传 overwrite: true，或换一个输出路径"},
+            ensure_ascii=False)
+
+    try:
+        return _write_pptx_impl(spec, output_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _write_pptx_impl(spec: dict, output_path: str) -> str:
     prs = Presentation()
 
     # 页面尺寸（16:9）
@@ -162,36 +227,80 @@ def write_pptx(spec_json: str) -> str:
         6: 6,   # Blank
     }
 
-    for slide_spec in spec.get("slides", []):
+    for slide_spec in spec["slides"]:
+        if not isinstance(slide_spec, dict):
+            raise ValueError(f"slides 每项必须是对象，收到: {slide_spec!r}")
         layout_idx = slide_spec.get("layout", 6)
-        layout_idx = layout_map.get(layout_idx, 6)
-        slide_layout = prs.slide_layouts[layout_idx]
-        slide = prs.slides.add_slide(slide_layout)
+        if layout_idx not in layout_map:
+            raise ValueError(f"layout 只支持 0（标题页）/ 1（标题+内容）/ 6（空白），收到 {layout_idx}")
+        layout_idx = layout_map[layout_idx]
+        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-        # 标题
-        if slide_spec.get("title") and slide.shapes.title:
-            slide.shapes.title.text = slide_spec["title"]
+        # 背景色
+        if slide_spec.get("background"):
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = _rgb(slide_spec["background"])
 
-        # 副标题
+        # 标题（无标题占位符时自动加文本框，不再静默丢弃）
+        if slide_spec.get("title"):
+            title_shape = slide.shapes.title or _add_title_textbox(slide, prs)
+            title_shape.text = slide_spec["title"]
+            default_title_size = 40 if layout_idx == 0 else 32
+            _apply_font(title_shape.text_frame.paragraphs[0],
+                        size=slide_spec.get("title_size", default_title_size),
+                        color=slide_spec.get("title_color"), bold=True)
+            for p in title_shape.text_frame.paragraphs[1:]:
+                _apply_font(p, size=slide_spec.get("title_size", default_title_size),
+                            color=slide_spec.get("title_color"), bold=True)
+
+        # 副标题（只认 SUBTITLE 类型占位符，避免误用正文占位符）
         if slide_spec.get("subtitle"):
-            # 查找副标题占位符
             for ph in slide.placeholders:
-                if ph.placeholder_format.idx == 1:
-                    ph.text = slide_spec["subtitle"]
-                    break
+                try:
+                    if ph.placeholder_format.type == PP_PLACEHOLDER.SUBTITLE:
+                        ph.text = slide_spec["subtitle"]
+                        for p in ph.text_frame.paragraphs:
+                            _apply_font(p, size=20, color=slide_spec.get("title_color"))
+                        break
+                except Exception:
+                    continue
 
         # 要点（无正文占位符时自动添加文本框，不再静默丢弃）
         if slide_spec.get("bullets"):
             body_shape = _find_body_shape(slide) or _add_body_textbox(slide, prs)
             tf = body_shape.text_frame
             tf.clear()
+            bullet_size = slide_spec.get("bullet_size", 18)
+            bullet_color = slide_spec.get("bullet_color")
             for i, bullet in enumerate(slide_spec["bullets"]):
                 if i == 0:
-                    tf.paragraphs[0].text = bullet
+                    p = tf.paragraphs[0]
                 else:
                     p = tf.add_paragraph()
-                    p.text = bullet
-                    p.level = 0
+                p.text = str(bullet)
+                p.level = 0
+                _apply_font(p, size=bullet_size, color=bullet_color)
+
+        # 图片
+        if slide_spec.get("image"):
+            ispec = slide_spec["image"]
+            ipath = ispec.get("path", "")
+            if not ipath or not os.path.exists(ipath):
+                raise ValueError(f"图片不存在: {ipath!r}")
+            pic_kwargs = {}
+            if ispec.get("width"):
+                pic_kwargs["width"] = Inches(ispec["width"])
+            if ispec.get("height"):
+                pic_kwargs["height"] = Inches(ispec["height"])
+            if not pic_kwargs:
+                pic_kwargs["width"] = Inches(4.0)
+            slide.shapes.add_picture(
+                ipath,
+                Inches(ispec.get("left", 0.5)),
+                Inches(ispec.get("top", 0.5)),
+                **pic_kwargs,
+            )
 
         # 表格
         if slide_spec.get("table"):
@@ -210,14 +319,17 @@ def write_pptx(spec_json: str) -> str:
             )
             table = table_shape.table
 
+            # 列宽
+            for ci, w in enumerate(tspec.get("col_widths", [])):
+                if ci < len(table.columns):
+                    table.columns[ci].width = Inches(w)
+
             # 表头
             for ci, h in enumerate(headers):
                 cell = table.cell(0, ci)
-                cell.text = h
+                cell.text = str(h)
                 for p in cell.text_frame.paragraphs:
-                    p.font.size = Pt(11)
-                    p.font.bold = True
-                    p.font.color.rgb = RGBColor(255, 255, 255)
+                    _apply_font(p, size=12, color="#FFFFFF", bold=True)
                     p.alignment = PP_ALIGN.CENTER
                 cell.fill.solid()
                 cell.fill.fore_color.rgb = RGBColor(0x33, 0x33, 0x33)
@@ -228,8 +340,12 @@ def write_pptx(spec_json: str) -> str:
                     cell = table.cell(ri + 1, ci)
                     cell.text = str(val)
                     for p in cell.text_frame.paragraphs:
-                        p.font.size = Pt(10)
+                        _apply_font(p, size=11)
                         p.alignment = PP_ALIGN.CENTER
+
+        # 演讲者备注
+        if slide_spec.get("notes"):
+            slide.notes_slide.notes_text_frame.text = str(slide_spec["notes"])
 
     prs.save(output_path)
     return json.dumps({"success": True, "output": output_path, "slide_count": len(prs.slides)}, ensure_ascii=False)

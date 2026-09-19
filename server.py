@@ -86,7 +86,8 @@ def read_docx(file_path: str, mode: str = "full") -> str:
 
 @mcp.tool()
 def write_docx(output: str, content_json: str = "[]", title: str = "",
-               body_font: str = "宋体", heading_font: str = "黑体") -> str:
+               body_font: str = "宋体", heading_font: str = "黑体",
+               overwrite: bool = False) -> str:
     """生成 Word 文档(.docx)。支持标题、段落、表格、分页、签署页。
 
     Args:
@@ -98,11 +99,13 @@ def write_docx(output: str, content_json: str = "[]", title: str = "",
             {"type":"table","headers":["序号","名称"],"rows":[["1","项目A"],["","合计"]],"widths":[2,5]}
             {"type":"page_break"}
             {"type":"signature","left":{"party":"甲方","rep":"______"},"right":{"party":"乙方","rep":"张三"}}
-        title: 文档标题（可选）
+        title: 文档标题（可选，渲染为居中大标题）
         body_font: 正文字体（默认宋体）
-        heading_font: 标题字体（默认黑体）
+        heading_font: 条款标题字体（默认黑体）
+        overwrite: 目标文件已存在时是否覆盖（默认 false，会报错提示）
     """
-    spec = {"output": output, "body_font": body_font, "heading_font": heading_font}
+    spec = {"output": output, "body_font": body_font, "heading_font": heading_font,
+            "overwrite": overwrite}
     if title:
         spec["title"] = title
     spec["content"] = json.loads(content_json) if content_json else []
@@ -127,15 +130,17 @@ def read_xlsx(file_path: str, sheet_name: str = "", mode: str = "full") -> str:
 
 
 @mcp.tool()
-def write_xlsx(output: str, sheets_json: str = "[{\"name\":\"Sheet1\",\"headers\":[\"A\"],\"rows\":[[\"\"]]}]") -> str:
+def write_xlsx(output: str, sheets_json: str = "[{\"name\":\"Sheet1\",\"headers\":[\"A\"],\"rows\":[[\"\"]]}]",
+               overwrite: bool = False) -> str:
     """生成 Excel 文件(.xlsx)。支持多 Sheet、表头格式、合并单元格、冻结窗格。
 
     Args:
         output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/表格.xlsx
         sheets_json: Sheet 定义 JSON 数组，每项格式:
             {"name":"Sheet1","headers":["序号","名称","金额"],"rows":[["1","交换机",3995]],"col_widths":[8,30,15],"freeze":"A2"}
+        overwrite: 目标文件已存在时是否覆盖（默认 false，会报错提示）
     """
-    spec = {"output": output}
+    spec = {"output": output, "overwrite": overwrite}
     spec["sheets"] = json.loads(sheets_json) if sheets_json else []
     return _write_xlsx(json.dumps(spec, ensure_ascii=False))
 
@@ -157,18 +162,26 @@ def read_pptx(file_path: str, mode: str = "full") -> str:
 
 
 @mcp.tool()
-def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标题\"}]") -> str:
-    """生成 PowerPoint 演示文稿(.pptx)。支持标题、副标题、要点列表、数据表格。
+def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标题\"}]",
+               overwrite: bool = False) -> str:
+    """生成 PowerPoint 演示文稿(.pptx)。支持标题、副标题、要点列表、数据表格、背景色、图片、演讲者备注。
 
     Args:
         output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/演示.pptx
-        slides_json: 幻灯片 JSON 数组，每项格式:
-            {"layout":0,"title":"标题页","subtitle":"副标题"}
-            {"layout":1,"title":"内容页","bullets":["要点1","要点2"]}
-            {"layout":6,"title":"数据页","table":{"headers":["指标","Q1"],"rows":[["营收","100万"]]}}
-            layout: 0=标题页 1=标题+内容 6=空白页
+        slides_json: 幻灯片 JSON 数组，每项支持字段:
+            layout: 0=标题页 1=标题+内容 6=空白页（默认）
+            title: 标题文字（空白页自动加标题文本框）
+            subtitle: 副标题（仅标题页有效）
+            bullets: 要点列表
+            background: 背景色，如 "#C8102E"
+            title_color / title_size: 标题颜色 / 字号
+            bullet_color / bullet_size: 要点颜色 / 字号（默认 18）
+            image: {"path":"/a/b.png","left":1,"top":1,"width":4} 插图
+            notes: 演讲者备注
+            table: {"headers":[...],"rows":[[...]],"left":1.5,"top":2,"width":7,"height":3,"col_widths":[3.5,3.5]}
+        overwrite: 目标文件已存在时是否覆盖（默认 false，会报错提示）
     """
-    spec = {"output": output}
+    spec = {"output": output, "overwrite": overwrite}
     spec["slides"] = json.loads(slides_json) if slides_json else []
     return _write_pptx(json.dumps(spec, ensure_ascii=False))
 

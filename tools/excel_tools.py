@@ -143,6 +143,14 @@ def write_xlsx(spec_json: str) -> str:
     if not output_path:
         return json.dumps({"error": "必须指定 output 路径"}, ensure_ascii=False)
 
+    if not spec.get("sheets"):
+        return json.dumps({"error": "sheets 不能为空（空数组会生成没有工作表的空工作簿）"}, ensure_ascii=False)
+
+    if os.path.exists(output_path) and not spec.get("overwrite"):
+        return json.dumps(
+            {"error": f"文件已存在: {output_path}。如需覆盖请传 overwrite: true，或换一个输出路径"},
+            ensure_ascii=False)
+
     wb = Workbook()
 
     # 默认样式
