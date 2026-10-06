@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from tools.word_tools import read_docx as _read_docx, write_docx as _write_docx, edit_docx as _edit_docx
 from tools.excel_tools import read_xlsx as _read_xlsx, write_xlsx as _write_xlsx, edit_xlsx as _edit_xlsx
 from tools.ppt_tools import read_pptx as _read_pptx, write_pptx as _write_pptx, edit_pptx as _edit_pptx
+from tools.ppt_kit import write_pptx_design as _write_pptx_design
 from tools.filesystem_tools import (
     list_directory as _list_directory,
     read_file as _read_file,
@@ -190,6 +191,40 @@ def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标�
 def edit_pptx(file_path: str, spec_json: str) -> str:
     """编辑已有 PowerPoint 文件(.pptx)。支持全局查找替换文本、修改指定页标题、添加/删除幻灯片。"""
     return _edit_pptx(file_path, spec_json)
+
+
+@mcp.tool()
+def write_pptx_design(output: str, spec_json: str, overwrite: bool = False) -> str:
+    """生成"一次做好"的暗色科技风 PPT（赛博深蓝）。像素级精确绘制（文字可编辑）+ 自动产出每页预览图，供交付前目检。
+    要求：内容密度高（每内容页 6 条要点 + 3 格大数字数据条）；交付前必须 read_image 逐页查看 previews 检查溢出/遮挡。
+
+    Args:
+        output: 输出文件完整路径（.pptx）
+        spec_json: JSON 字符串，格式:
+            {"slides": [
+                {"id": "s1", "notes": "主持稿", "bg": {"cover": true, "accent": true}, "items": [...]},
+                {"id": "s2", "notes": "...", "bg": {"ghost": "target", "num": "02", "timeline": true}, "items": [...]}
+            ]}
+            bg（可省略，省略时自动：首末页封面，内容页分配幽灵图标+序号）:
+                cover: 封面/结尾页（芯片+网络装饰）
+                ghost: 幽灵图标 candles|target|bars|globe|gear
+                num: 右上角大号水印数字，如 "03"
+                timeline: 底部时间轴 2023-2026
+                accent: 标题下强调线
+                ghost_pos/num_pos/ghost_f: 位置/缩放微调，如 [1340,440] / 1.15
+            items（画布 1600×900 px）:
+                tag:   {"t","x","y","w","h","s","size":13,"color":"7FA8C9"} 顶部英文小标签（等宽字体）
+                title: {"t","x","y","w","h","s","size":34,"color":"5EA0FF","bold":true}
+                text:  {"t","x","y","w","h","s","size","color"}
+                mono:  {"t","x","y","w","h","s","size","color"} 等宽字体（数字/英文/注释行）
+                bullet:{"t","x":112,"y","tx":178,"h":40,"num":"01","text":"..."} 编号要点（y 从 252 起、行距 66、最多 6 行）
+                chip:  {"t","x","y","w":220,"h":118,"name","field","hl":false}
+                databar:{"t","y":656,"cells":[["5950 亿美元","注释"],["-17%","注释"],["2048 张 H800","注释"]]} 3 格大数字
+                table: {"t","x":110,"y":245,"w":1080,"h":366,"cols":[300,400,380],"rowh":[56,62,62],"rows":[["指标","A","B"],...]}
+                        表宽必须 ≤1080（否则遮挡右侧幽灵图标）
+        overwrite: 目标已存在时是否覆盖（默认 false）
+    """
+    return _write_pptx_design(output, spec_json, overwrite)
 
 
 # ═══════════════════════════════════════════

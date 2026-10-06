@@ -69,7 +69,7 @@ export OFFICE_TOOLS_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"
 
 ---
 
-## 全部 27 个工具
+## 全部 28 个工具
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -81,6 +81,7 @@ export OFFICE_TOOLS_ALLOWED_DIRS="$HOME/Documents:$HOME/Downloads"
 | | `edit_xlsx` | 编辑已有表格（写值/增删行/合并/改名） |
 | **PPT** | `read_pptx` | 读取幻灯片（文本/表格/大纲/备注） |
 | | `write_pptx` | 创建演示文稿（标题/要点/表格） |
+| | `write_pptx_design` | 暗色科技风"一次做好"PPT：像素级绘制（文字可编辑）+ 自动预览图 + 溢出警告 |
 | | `edit_pptx` | 编辑已有 PPT（替换文本/改标题/增删页面） |
 | **PDF** | `pdf_info` | 获取 PDF 信息（页数/大小） |
 | | `pdf_extract_text` | 提取文本内容 |
