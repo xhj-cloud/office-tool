@@ -222,6 +222,17 @@ def write_pptx_design(output: str, spec_json: str, overwrite: bool = False) -> s
                 databar:{"t","y":656,"cells":[["5950 亿美元","注释"],["-17%","注释"],["2048 张 H800","注释"]]} 3 格大数字
                 table: {"t","x":110,"y":245,"w":1080,"h":366,"cols":[300,400,380],"rowh":[56,62,62],"rows":[["指标","A","B"],...]}
                         表宽必须 ≤1080（否则遮挡右侧幽灵图标）
+            transition（页间转场，可选）: spec 顶层 {"type":"fade","speed":"med"} 全局生效，
+                每页可再传同名字段覆盖。
+                type: fade/cut/push/wipe/cover/split/blinds/checkerboard/circle/comb/diamond/
+                      newsflash/plus/pull/randomBar/strips/wedge/wheel/zoom
+                dir（方向类效果）: l/r/u/d（split 用 horz/vert）；speed: slow/med/fast
+            anim（item 字段，元素入场动画，可选）:
+                {"effect":"fade","start":"click","dur":500}
+                effect: fade 淡入 / appear 出现 / fly_in 飞入（另加 dir: bottom|top|left|right）
+                start: click 点击触发（开新组）/ with 与上一条同时 / after 紧随上一条结束
+                典型用法：内容页要点逐条 fade——第一条 start=click，其余 start=after
+                注意：table 不支持 anim；动画在预览图中不显示，生成后需在 PowerPoint 中检查
         overwrite: 目标已存在时是否覆盖（默认 false）
     """
     return _write_pptx_design(output, spec_json, overwrite)

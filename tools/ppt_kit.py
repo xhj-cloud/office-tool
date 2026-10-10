@@ -302,41 +302,49 @@ def _add_box(slide, x, y, w, h, fill, line=None, lw=1.2, radius=0.10):
 
 
 def build_pptx(output, slides, bgdir):
-    """slides: [(sid, {notes, items})]；bgdir: 背景 PNG 目录（<sid>.png）"""
+    """slides: [(sid, {notes, items, transition?})]；bgdir: 背景 PNG 目录（<sid>.png）。
+    返回警告列表（如 table 指定了动画）。"""
     S = STYLES["cyber"]
     prs = Presentation()
     prs.slide_width = Emu(SLIDE_W_EMU)
     prs.slide_height = Emu(SLIDE_H_EMU)
     blank = prs.slide_layouts[6]
+    build_warn = []
     for sid, sp in slides:
         slide = prs.slides.add_slide(blank)
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = RGBColor.from_string(S["bg"])
         slide.shapes.add_picture(os.path.join(bgdir, sid + ".png"), 0, 0, Emu(SLIDE_W_EMU), Emu(SLIDE_H_EMU))
+        anim_entries = []  # [(shape_ids, anim_cfg)]，按声明顺序
         for it in sp["items"]:
             t = it["t"]
+            shapes = []
             if t in ("tag", "mono"):
-                _add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"], False, mono=True)
+                shapes = [_add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"], False, mono=True)]
             elif t == "title":
-                _add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"], it.get("bold", True))
+                shapes = [_add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"], it.get("bold", True))]
             elif t == "text":
-                _add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"])
+                shapes = [_add_text(slide, it["x"], it["y"], it["w"], it["h"], it["s"], it["size"], it["color"])]
             elif t == "bullet":
-                _add_text(slide, it["x"], it["y"], 44, it["h"], it["num"], 16, S["cyan"], True, mono=True)
-                _add_text(slide, it["tx"], it["y"], 960, it["h"], it["text"], 18, S["body"])
+                shapes = [
+                    _add_text(slide, it["x"], it["y"], 44, it["h"], it["num"], 16, S["cyan"], True, mono=True),
+                    _add_text(slide, it["tx"], it["y"], 960, it["h"], it["text"], 18, S["body"]),
+                ]
             elif t == "chip":
                 hl = it.get("hl", False)
-                _add_box(slide, it["x"], it["y"], it["w"], it["h"],
-                         S["chiphl"] if hl else S["chipf"], S["cyan"] if hl else S["chipb"], 1.5 if hl else 1.0)
-                _add_text(slide, it["x"], it["y"] + 28, it["w"], 32, it["name"], 15,
-                          S["cyan"] if hl else S["chipname"], True, align="center")
-                _add_text(slide, it["x"], it["y"] + 68, it["w"], 26, it["field"], 11, S["dim"], align="center")
+                shapes = [
+                    _add_box(slide, it["x"], it["y"], it["w"], it["h"],
+                             S["chiphl"] if hl else S["chipf"], S["cyan"] if hl else S["chipb"], 1.5 if hl else 1.0),
+                    _add_text(slide, it["x"], it["y"] + 28, it["w"], 32, it["name"], 15,
+                              S["cyan"] if hl else S["chipname"], True, align="center"),
+                    _add_text(slide, it["x"], it["y"] + 68, it["w"], 26, it["field"], 11, S["dim"], align="center"),
+                ]
             elif t == "databar":
                 for i, (num, lab) in enumerate(it["cells"]):
                     x = 110 + i * (448 + 22)
-                    _add_box(slide, x, it["y"], 448, 120, S["cell"], S["cyan"], 1.2)
-                    _add_text(slide, x + 26, it["y"] + 20, 400, 44, num, 24, S["cyan"], True, mono=True)
-                    _add_text(slide, x + 26, it["y"] + 80, 400, 28, lab, 13, S["dim"])
+                    shapes.append(_add_box(slide, x, it["y"], 448, 120, S["cell"], S["cyan"], 1.2))
+                    shapes.append(_add_text(slide, x + 26, it["y"] + 20, 400, 44, num, 24, S["cyan"], True, mono=True))
+                    shapes.append(_add_text(slide, x + 26, it["y"] + 80, 400, 28, lab, 13, S["dim"]))
             elif t == "table":
                 rows = len(it["rows"])
                 cols = len(it["rows"][0])
@@ -376,9 +384,19 @@ def build_pptx(output, slides, bgdir):
                         p = tf.paragraphs[0]
                         p.alignment = PP_ALIGN.LEFT
                         _set_run(p.add_run(), val, s, c, b, mo)
+            if it.get("anim"):
+                if t == "table":
+                    build_warn.append(f"{sid} table 不支持入场动画（anim 已忽略）")
+                else:
+                    anim_entries.append(([sh.shape_id for sh in shapes], it["anim"]))
+        if sp.get("transition"):
+            _add_transition(slide, sp["transition"])
+        if anim_entries:
+            _add_timing(slide, anim_entries)
         ns = slide.notes_slide
         ns.notes_text_frame.text = sp.get("notes", "")
     prs.save(output)
+    return build_warn
 
 
 # ═══════════════════════════════════════════════════════════
@@ -487,6 +505,168 @@ def render_previews(slides, bgdir, prevdir):
 
 
 # ═══════════════════════════════════════════════════════════
+# 动画：页间转场（p:transition）+ 元素入场（p:timing）
+# python-pptx 无动画 API，按 ECMA-376 直接注入 XML 节点
+# （与 a:ea 中文字体、No Grid 表格同一手法）
+# ═══════════════════════════════════════════════════════════
+
+NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+# 页间转场：type → p:transition 子元素（{dir} 为方向占位：l/r/u/d，split 用 horz/vert）
+TRANSITION_TYPES = {
+    "fade": "<p:fade/>", "cut": "<p:cut/>", "circle": "<p:circle/>", "diamond": "<p:diamond/>",
+    "newsflash": "<p:newsflash/>", "plus": "<p:plus/>", "wedge": "<p:wedge/>",
+    "wheel": "<p:wheel/>", "zoom": "<p:zoom/>",
+    "push": '<p:push dir="{dir}"/>', "wipe": '<p:wipe dir="{dir}"/>', "cover": '<p:cover dir="{dir}"/>',
+    "split": '<p:split dir="{dir}"/>', "blinds": '<p:blinds dir="{dir}"/>',
+    "checkerboard": '<p:checkerboard dir="{dir}"/>', "comb": '<p:comb dir="{dir}"/>',
+    "pull": '<p:pull dir="{dir}"/>', "randomBar": '<p:randomBar dir="{dir}"/>',
+    "strips": '<p:strips dir="{dir}"/>',
+}
+
+# 入场效果：effect → (presetID, animEffect filter, 位置动画)
+# fly_in 方向 subtype：1=左 2=右 4=下 8=上
+ENTRANCE_PRESETS = {
+    "appear": {"preset_id": 1, "subtype": 0, "filter": None, "fly": None},
+    "fade": {"preset_id": 10, "subtype": 0, "filter": "fade", "fly": None},
+    "fly_in": {"preset_id": 2, "subtype": None, "filter": "fade",
+               "fly": {"bottom": (4, "ppt_y", "1+#ppt_h/2", "#ppt_y"),
+                       "top": (8, "ppt_y", "-#ppt_h/2", "#ppt_y"),
+                       "left": (1, "ppt_x", "-#ppt_w/2", "#ppt_x"),
+                       "right": (2, "ppt_x", "1+#ppt_w/2", "#ppt_x")}},
+}
+
+
+def _slide_insert(slide, el, after_tags):
+    """按 schema 顺序插入 p:sld 子元素（cSld < clrMapOvr < transition < timing）"""
+    sld = slide._element
+    idx = 0
+    for tag in after_tags:
+        e = sld.find(qn(tag))
+        if e is not None:
+            idx = sld.index(e) + 1
+            break
+    sld.insert(idx, el)
+
+
+def _add_transition(slide, cfg):
+    t = cfg.get("type", "fade")
+    if t not in TRANSITION_TYPES:
+        raise ValueError(f"未知转场效果: {t}（支持: {', '.join(TRANSITION_TYPES)}）")
+    dir_ = cfg.get("dir", "l" if t != "split" else "horz")
+    speed = cfg.get("speed", "med")
+    body = TRANSITION_TYPES[t].format(dir=dir_)
+    el = etree.fromstring(f'<p:transition xmlns:p="{NS_P}" spd="{speed}">{body}</p:transition>')
+    _slide_insert(slide, el, ["p:clrMapOvr", "p:cSld"])
+
+
+def _anim_set_xml(spid, cid):
+    return (
+        f'<p:set><p:cBhvr><p:cTn id="{cid}" dur="1" fill="hold">'
+        f'<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>'
+        f'<p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl>'
+        f'<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>'
+        f'</p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>'
+    )
+
+
+def _anim_effect_xml(spid, dur, cid, flt):
+    return (
+        f'<p:animEffect transition="in" filter="{flt}"><p:cBhvr>'
+        f'<p:cTn id="{cid}" dur="{dur}"/>'
+        f'<p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl></p:cBhvr></p:animEffect>'
+    )
+
+
+def _fly_anim_xml(spid, direction, dur, cid):
+    sub, attr, frm, to = ENTRANCE_PRESETS["fly_in"]["fly"][direction]
+    return (
+        f'<p:anim calcmode="lin" valueType="num"><p:cBhvr additive="base">'
+        f'<p:cTn id="{cid}" dur="{dur}" fill="hold"/>'
+        f'<p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl>'
+        f'<p:attrNameLst><p:attrName>{attr}</p:attrName></p:attrNameLst></p:cBhvr>'
+        f'<p:tavLst>'
+        f'<p:tav tm="0"><p:val><p:strVal val="{frm}"/></p:val></p:tav>'
+        f'<p:tav tm="100000"><p:val><p:strVal val="{to}"/></p:val></p:tav>'
+        f'</p:tavLst></p:anim>'
+    )
+
+
+def _effect_par_xml(spid, effect, direction, dur, node_type, ids):
+    """单个形状的入场效果节点（p:par）。ids=[n] 为共享 id 计数器。"""
+    p = ENTRANCE_PRESETS[effect]
+    sub = p["subtype"] if p["subtype"] is not None else p["fly"][direction][0]
+
+    def nid():
+        ids[0] += 1
+        return ids[0]
+
+    children = _anim_set_xml(spid, nid())
+    if p["fly"]:
+        children += _fly_anim_xml(spid, direction, dur, nid())
+    if p["filter"]:
+        children += _anim_effect_xml(spid, dur, nid(), p["filter"])
+    return (
+        f'<p:par><p:cTn id="{nid()}" presetID="{p["preset_id"]}" presetClass="entr" '
+        f'presetSubtype="{sub}" fill="hold" nodeType="{node_type}">'
+        f'<p:stCondLst><p:cond delay="0"/></p:stCondLst>'
+        f'<p:childTnLst>{children}</p:childTnLst></p:cTn></p:par>'
+    )
+
+
+def _add_timing(slide, entries):
+    """entries: [(shape_ids, anim_cfg)] 按声明顺序。
+    anim_cfg: {effect: fade|appear|fly_in, start: click|with|after, dir: bottom|top|left|right, dur: ms}
+    start=click 开新点击组；with/after 归入上一组（with=同时，after=接前一个）。"""
+    ids = [0]
+
+    def nid():
+        ids[0] += 1
+        return ids[0]
+
+    groups = []  # [[(shape_ids, anim_cfg, node_type), ...], ...]
+    for shape_ids, cfg in entries:
+        start = cfg.get("start", "click")
+        node = {"click": "clickEffect", "with": "withEffect", "after": "afterEffect"}[start]
+        if start == "click" or not groups:
+            groups.append([])
+        groups[-1].append((shape_ids, cfg, node))
+
+    bld_spids = []
+    click_pars = []
+    for g in groups:
+        effect_pars = []
+        for shape_ids, cfg, node in g:
+            effect = cfg.get("effect", "fade")
+            direction = cfg.get("dir", "bottom")
+            dur = int(cfg.get("dur", 500))
+            for spid in shape_ids:
+                if spid not in bld_spids:
+                    bld_spids.append(spid)
+                effect_pars.append(_effect_par_xml(spid, effect, direction, dur, node, ids))
+        click_pars.append(
+            f'<p:par><p:cTn id="{nid()}" fill="hold">'
+            f'<p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst>'
+            f'<p:par><p:cTn id="{nid()}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst>'
+            f'<p:childTnLst>{"".join(effect_pars)}</p:childTnLst></p:cTn></p:par>'
+            f'</p:childTnLst></p:cTn></p:par>'
+        )
+    bld = "".join(f'<p:bldP spid="{s}" grpId="0"/>' for s in bld_spids)
+    xml = (
+        f'<p:timing xmlns:p="{NS_P}"><p:tnLst><p:par>'
+        f'<p:cTn id="{nid()}" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>'
+        f'<p:seq concurrent="1" nextAc="seek"><p:cTn id="{nid()}" dur="indefinite" nodeType="mainSeq">'
+        f'<p:childTnLst>{"".join(click_pars)}</p:childTnLst></p:cTn>'
+        f'<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>'
+        f'<p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst>'
+        f'</p:seq></p:childTnLst></p:cTn></p:par></p:tnLst>'
+        f'<p:bldLst>{bld}</p:bldLst></p:timing>'
+    )
+    el = etree.fromstring(xml)
+    _slide_insert(slide, el, ["p:transition", "p:clrMapOvr", "p:cSld"])
+
+
+# ═══════════════════════════════════════════════════════════
 # MCP 工具入口
 # ═══════════════════════════════════════════════════════════
 
@@ -518,7 +698,25 @@ def write_pptx_design(output: str, spec_json: str, overwrite: bool = False) -> s
     if os.path.exists(output) and not overwrite:
         return json.dumps({"error": f"目标文件已存在: {output}（如需覆盖请传 overwrite=true）"}, ensure_ascii=False)
 
-    # 规范化 slides：补默认 id / bg，校验 item 类型
+    def _check_transition(tr, where):
+        t = tr.get("type", "fade")
+        if t not in TRANSITION_TYPES:
+            return f"{where}未知转场效果: {t}（支持: {', '.join(TRANSITION_TYPES)}）"
+        d = tr.get("dir", "l")
+        valid = ("horz", "vert") if t == "split" else ("l", "r", "u", "d")
+        if d not in valid:
+            return f"{where}转场 {t} 方向非法: {d}（可选: {', '.join(valid)}）"
+        if tr.get("speed", "med") not in ("slow", "med", "fast"):
+            return f"{where}转场速度非法（可选 slow/med/fast）"
+        return None
+
+    global_trans = spec.get("transition")
+    if global_trans is not None:
+        err = _check_transition(global_trans, "全局")
+        if err:
+            return json.dumps({"error": err}, ensure_ascii=False)
+
+    # 规范化 slides：补默认 id / bg / transition，校验 item 类型与动画
     total = len(slides_spec)
     norm = []
     for i, sp in enumerate(slides_spec, 1):
@@ -527,10 +725,25 @@ def write_pptx_design(output: str, spec_json: str, overwrite: bool = False) -> s
         items = sp.get("items") or []
         if not items and not bg.get("cover"):
             return json.dumps({"error": f"第 {i} 页（{sid}）items 为空——内容页必须有条目"}, ensure_ascii=False)
+        trans = sp.get("transition")
+        if trans is not None:
+            err = _check_transition(trans, f"第 {i} 页")
+            if err:
+                return json.dumps({"error": err}, ensure_ascii=False)
+        else:
+            trans = global_trans
         for it in items:
             if it.get("t") not in ("tag", "title", "text", "mono", "bullet", "chip", "databar", "table"):
                 return json.dumps({"error": f"第 {i} 页存在未知 item 类型: {it.get('t')}"}, ensure_ascii=False)
-        norm.append((sid, {"notes": sp.get("notes", ""), "items": items, "bg": bg}))
+            anim = it.get("anim")
+            if anim:
+                if anim.get("effect", "fade") not in ENTRANCE_PRESETS:
+                    return json.dumps({"error": f"第 {i} 页未知入场效果: {anim.get('effect')}（支持: {', '.join(ENTRANCE_PRESETS)}）"}, ensure_ascii=False)
+                if anim.get("start", "click") not in ("click", "with", "after"):
+                    return json.dumps({"error": f"第 {i} 页动画 start 非法（可选 click/with/after）"}, ensure_ascii=False)
+                if anim.get("effect") == "fly_in" and anim.get("dir", "bottom") not in ENTRANCE_PRESETS["fly_in"]["fly"]:
+                    return json.dumps({"error": f"第 {i} 页 fly_in 方向非法（可选 bottom/top/left/right）"}, ensure_ascii=False)
+        norm.append((sid, {"notes": sp.get("notes", ""), "items": items, "bg": bg, "transition": trans}))
 
     workdir = tempfile.mkdtemp(prefix="ppt_design_")
     bgdir, prevdir = os.path.join(workdir, "bg"), os.path.join(workdir, "prev")
@@ -538,8 +751,8 @@ def write_pptx_design(output: str, spec_json: str, overwrite: bool = False) -> s
     try:
         for sid, sp in norm:
             render_bg(sp["bg"]).save(os.path.join(bgdir, sid + ".png"))
-        build_pptx(output, norm, bgdir)
-        warnings = render_previews(norm, bgdir, prevdir)
+        build_warn = build_pptx(output, norm, bgdir)
+        warnings = build_warn + render_previews(norm, bgdir, prevdir)
     except Exception as e:
         return json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
 
