@@ -5,7 +5,10 @@ PowerPoint 演示文稿读写工具
 
 import json
 import os
+import shutil
+import subprocess
 from lxml import etree
+from PIL import Image as PILImage
 from pptx import Presentation
 from pptx.util import Inches, Pt, Cm, Emu
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
@@ -14,6 +17,10 @@ from pptx.dml.color import RGBColor
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import nsdecls, qn
 from .json_repair import safe_parse_json
+from .ppt_kit import TRANSITION_TYPES, _add_transition
+
+# 设计系统默认字体（deck 级 theme.font 可覆盖）
+DEFAULT_FONT = "微软雅黑"
 
 
 def _iter_shapes(shapes):
@@ -70,9 +77,14 @@ def _rgb(color: str):
     return RGBColor.from_string(c)
 
 
-def _apply_font(paragraph, font_name: str = "微软雅黑", size: float = None,
+def _apply_font(paragraph, font_name: str = None, size: float = None,
                 color: str = None, bold: bool = None):
-    """为段落的所有 run 设置字体（含中文 eastAsia 字体）、字号、颜色、加粗"""
+    """为段落的所有 run 设置字体（含中文 eastAsia 字体）、字号、颜色、加粗
+
+    font_name 缺省用模块级 DEFAULT_FONT（deck 级 theme.font 可覆盖）
+    """
+    if font_name is None:
+        font_name = DEFAULT_FONT
     if not paragraph.runs:
         paragraph.add_run()
     for run in paragraph.runs:
@@ -271,13 +283,13 @@ def _build_section_slide(slide, prs, slide_spec: dict):
     _set_run_alpha(p2.runs[0], 75)
     p2.runs[0]._r.get_or_add_rPr().set("spc", "500")  # 5pt 字距
 
-    # 4) 白色强调线
+    # 4) 强调线（默认白，可用 accent_color 覆盖）
     bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE,
                                  Inches(left_in + 0.02), Inches(3.08),
                                  Inches(0.85), Inches(0.05))
     bar.line.fill.background()
     bar.fill.solid()
-    bar.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    bar.fill.fore_color.rgb = _rgb(slide_spec.get("accent_color") or "#FFFFFF")
 
     # 5) 中文大标题
     tb_title = slide.shapes.add_textbox(Inches(left_in), Inches(3.4),
@@ -299,6 +311,171 @@ def _build_section_slide(slide, prs, slide_spec: dict):
     for sh in (tb_word, tb_label, tb_title):
         _apply_text_shadow(sh, shadow_mode)
     return slide
+
+
+def _apply_src_crop(pic, l, t, r, b):
+    """给图片形状注入 srcRect 裁切（单位：1/1000 百分比，100000=100%）"""
+    blipFill = pic._element.find(qn("p:blipFill"))
+    if blipFill is None:
+        return
+    crop = parse_xml(f'<a:srcRect {nsdecls("a")} '
+                     f'l="{int(l)}" t="{int(t)}" r="{int(r)}" b="{int(b)}"/>')
+    blip = blipFill.find(qn("a:blip"))
+    idx = list(blipFill).index(blip) + 1 if blip is not None else 0
+    blipFill.insert(idx, crop)
+
+
+def _add_image_fit(slide, ipath, left, top, bw, bh, fit="stretch"):
+    """图片像素级定位。
+
+    fit:
+      stretch  拉伸到框（宽高都给出时可能变形，兼容旧行为）
+      cover    居中裁切填充：等比放大盖满框再四边裁掉多余（不变形，设计稿级）
+      contain  完整放入框内居中（留边，不裁切）
+    """
+    with PILImage.open(ipath) as im:
+        iw, ih = im.size
+    if fit == "cover" and bw and bh and iw and ih:
+        pic = slide.shapes.add_picture(ipath, Inches(left), Inches(top),
+                                       Inches(bw), Inches(bh))
+        scale = max(bw / iw, bh / ih)
+        dw, dh = iw * scale, ih * scale
+        l = r = (dw - bw) / (2 * dw) * 100000
+        t = b = (dh - bh) / (2 * dh) * 100000
+        _apply_src_crop(pic, l, t, r, b)
+        return pic
+    if fit == "contain" and bw and bh and iw and ih:
+        scale = min(bw / iw, bh / ih)
+        fw, fh = iw * scale, ih * scale
+        return slide.shapes.add_picture(
+            ipath, Inches(left + (bw - fw) / 2), Inches(top + (bh - fh) / 2),
+            Inches(fw), Inches(fh))
+    # stretch / 只给单边 / 默认
+    kwargs = {}
+    if bw:
+        kwargs["width"] = Inches(bw)
+    if bh:
+        kwargs["height"] = Inches(bh)
+    if not kwargs:
+        kwargs["width"] = Inches(4.0)
+    return slide.shapes.add_picture(ipath, Inches(left), Inches(top), **kwargs)
+
+
+def _ffmpeg_candidates():
+    """ffmpeg 候选：系统 PATH 优先，imageio-ffmpeg 静态二进制兜底（去重）"""
+    out = []
+    f = shutil.which("ffmpeg")
+    if f:
+        out.append(f)
+    try:
+        import imageio_ffmpeg
+        out.append(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception:
+        pass
+    seen, uniq = set(), []
+    for f in out:
+        if f not in seen:
+            seen.add(f)
+            uniq.append(f)
+    return uniq
+
+
+def _extract_poster(video_path: str, tmp_path: str):
+    """用 ffmpeg 抽视频首帧做封面（poster）；系统 ffmpeg 是残缺版时自动换静态版重试"""
+    cands = _ffmpeg_candidates()
+    if not cands:
+        raise ValueError(f"视频 {os.path.basename(video_path)} 未指定 poster 且没有可用 "
+                         f"ffmpeg（pip install imageio-ffmpeg 或系统安装）；"
+                         f"也可手动传 poster: \"/path/封面.png\"")
+    last_err = ""
+    for f in cands:
+        r = subprocess.run([f, "-y", "-loglevel", "error", "-i", video_path,
+                            "-frames:v", "1", tmp_path],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and os.path.exists(tmp_path):
+            return
+        last_err = r.stderr.strip()[:200]
+    raise ValueError(f"视频封面抽取失败: {last_err}")
+
+
+def _add_video(slide, vspec: dict, prs):
+    """嵌入视频（默认全屏）。poster 缺省时自动抽首帧（需 ffmpeg）"""
+    path = vspec.get("path", "")
+    if not path or not os.path.exists(path):
+        raise ValueError(f"视频不存在: {path!r}")
+    left = vspec.get("left", 0)
+    top = vspec.get("top", 0)
+    width = vspec.get("width") or Emu(prs.slide_width).inches
+    height = vspec.get("height") or Emu(prs.slide_height).inches
+    poster = vspec.get("poster")
+    if not poster:
+        import tempfile
+        # 用 .jpg：imageio-ffmpeg 静态构建无 PNG 复用器，JPEG 兼容性更稳
+        tmp = os.path.join(tempfile.gettempdir(), f"ot_poster_{os.getpid()}.jpg")
+        _extract_poster(path, tmp)
+        poster = tmp
+    if not os.path.exists(poster):
+        raise ValueError(f"视频封面不存在: {poster!r}")
+    mime = vspec.get("mime") or (
+        "video/mp4" if path.lower().endswith((".mp4", ".m4v")) else "video/unknown")
+    return slide.shapes.add_movie(
+        path, Inches(left), Inches(top), Inches(width), Inches(height),
+        poster_frame_image=poster, mime_type=mime)
+
+
+def _add_chrome_text(slide, text, left, top, width, height, size, color,
+                     align=None, bold=False):
+    """设计系统 chrome 文本（页眉/页脚/页码）"""
+    tb = slide.shapes.add_textbox(Inches(left), Inches(top),
+                                  Inches(width), Inches(height))
+    p = tb.text_frame.paragraphs[0]
+    p.text = text
+    _apply_font(p, size=size, color=color, bold=bold or None)
+    if align:
+        p.alignment = align
+    return tb
+
+
+def _apply_slide_tail(slide, slide_spec, spec, prs, page_no, theme):
+    """统一页尾处理：视频 / 转场 / 设计系统 chrome（页眉/页脚/页码）。
+    普通页与章节扉页共用，保证转场和页码逐页一致（15 页逐页转场即由此实现）。"""
+    # 视频（默认全屏；poster 缺省自动抽首帧）
+    if slide_spec.get("video"):
+        v = slide_spec["video"]
+        if isinstance(v, str):
+            v = {"path": v}
+        _add_video(slide, v, prs)
+
+    # 转场（逐页：字符串 "fade" 或 {type, dir, speed}；缺省用 deck 级 transition）
+    trans = slide_spec.get("transition", spec.get("transition"))
+    if trans:
+        if isinstance(trans, str):
+            trans = {"type": trans}
+        _add_transition(slide, trans)
+
+    # 设计系统 chrome
+    if not theme:
+        return
+    w_in = Emu(prs.slide_width).inches
+    h_in = Emu(prs.slide_height).inches
+    on_photo = bool(slide_spec.get("background_image"))
+    chrome_color = theme.get("chrome_color") or ("#FFFFFF" if on_photo else "#666666")
+    if theme.get("header"):
+        # 显式 chrome_color 优先；照片页自动转白；浅色页用主题色（未设则灰）
+        if theme.get("chrome_color"):
+            header_color = theme["chrome_color"]
+        elif on_photo:
+            header_color = "#FFFFFF"
+        else:
+            header_color = theme.get("primary") or "#666666"
+        _add_chrome_text(slide, str(theme["header"]), 0.5, 0.2, 9.0, 0.4, 12,
+                         header_color)
+    if theme.get("footer"):
+        _add_chrome_text(slide, str(theme["footer"]), 0.5, h_in - 0.45,
+                         7.0, 0.35, 11, chrome_color)
+    if theme.get("page_number"):
+        _add_chrome_text(slide, str(page_no), w_in - 0.9, h_in - 0.45,
+                         0.6, 0.35, 11, chrome_color, align=PP_ALIGN.RIGHT)
 
 
 def read_pptx(file_path: str, mode: str = "full") -> str:
@@ -379,6 +556,21 @@ def write_pptx(spec_json: str) -> str:
         "overwrite": false,         // 目标文件已存在时是否覆盖（默认 false，会报错提示）
         "slide_width": 13.33,       // 英寸（16:9 默认）
         "slide_height": 7.5,
+        // ── 设计系统（deck 级，统一全套 PPT 的配色/字体/页眉/页脚/页码）──
+        "theme": {
+            "primary": "#C8102E",   // 主题色：默认标题色 + 页眉色
+            "accent": "#FFD700",    // 强调色：章节扉页强调线
+            "bg": "#F7F7F7",        // 默认底色（未指定背景的页）
+            "font": "微软雅黑",      // 全局字体
+            "header": "页眉文字",    // 每页左上页眉
+            "footer": "页脚文字",    // 每页左下页脚
+            "page_number": true,    // 每页右下页码
+            "chrome_color": "#666666"  // 页眉页脚页码颜色（照片背景页自动转白）
+        },
+        "transition": "fade",       // deck 级默认转场（逐页可覆盖；19 种:
+                                    //   fade/cut/zoom/push/wipe/cover/split/blinds/checkerboard/comb/
+                                    //   circle/diamond/newsflash/plus/wedge/wheel/pull/randomBar/strips，
+                                    //   对象形式 {type, dir: l/r/u/d, speed: slow/med/fast}）
         "slides": [
             {
                 "layout": 0,        // 0=标题页 1=标题+内容 6=空白（默认）
@@ -395,11 +587,22 @@ def write_pptx(spec_json: str) -> str:
                 //   scrim: 照片上文字可读性暗角 left/right/bottom/dark/none（默认 left）
                 "text_shadow": true,           // 标题/副标题/要点加外阴影（true=soft，
                 //   照片上白字建议 "strong"；参考设计稿同款文字处理）
-                "title_color": "#FFD700",       // 标题颜色
+                "title_color": "#FFD700",       // 标题颜色（缺省用 theme.primary）
                 "title_size": 40,               // 标题字号（默认：标题页 40，其他 32）
+                "title_spacing": 8,             // 标题字间距（pt，宽字距排版）
                 "bullet_color": "#333333",      // 要点颜色
                 "bullet_size": 18,              // 要点字号（默认 18）
-                "image": {"path": "/a/b/c.png", "left": 1.0, "top": 1.0, "width": 4.0},
+                "bullet_spacing": 1,            // 要点字间距（pt）
+                "bullet_line_spacing": 1.5,     // 要点行距倍数
+                "image": {"path": "/a/b/c.png", "left": 1.0, "top": 1.0, "width": 4.0,
+                          "height": 3.0, "fit": "cover"},
+                //   像素级定位（left/top/width/height 英寸，任意小数）；
+                //   fit: cover=居中裁切填充（不变形盖满框，设计稿级）/
+                //        contain=完整放入居中 / stretch=拉伸（默认，兼容旧行为）
+                "video": {"path": "/a/b/c.mp4", "left": 0, "top": 0,
+                          "width": 13.33, "height": 7.5, "poster": "/a/b/c.png"},
+                //   视频嵌入（默认全屏；poster 缺省时 ffmpeg 自动抽首帧）
+                "transition": "push",           // 本页转场（覆盖 deck 级；"fade"/{type,dir,speed}）
                 "notes": "主持人提示 / 时间控制",  // 演讲者备注
                 "table": {
                     "headers": ["列1", "列2"],
@@ -448,17 +651,26 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
         6: 6,   # Blank
     }
 
-    for slide_spec in spec["slides"]:
+    # 设计系统（deck 级 theme）：统一配色/字体/页眉/页脚/页码
+    theme = spec.get("theme") or {}
+    if theme.get("font"):
+        global DEFAULT_FONT
+        DEFAULT_FONT = str(theme["font"])
+
+    for i, slide_spec in enumerate(spec["slides"], 1):
         if not isinstance(slide_spec, dict):
             raise ValueError(f"slides 每项必须是对象，收到: {slide_spec!r}")
 
         # 章节扉页（PART ONE 风格）
         layout_key = slide_spec.get("layout", 6)
         if isinstance(layout_key, str) and layout_key in ("section", "part", "divider"):
+            slide_spec = dict(slide_spec)
+            slide_spec.setdefault("accent_color", theme.get("accent"))
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             _build_section_slide(slide, prs, slide_spec)
             if slide_spec.get("notes"):
                 slide.notes_slide.notes_text_frame.text = str(slide_spec["notes"])
+            _apply_slide_tail(slide, slide_spec, spec, prs, i, theme)
             continue
 
         if layout_key not in layout_map:
@@ -467,7 +679,10 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
         layout_idx = layout_map[layout_key]
         slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-        # 背景：整页图片 > 渐变 > 纯色
+        # 标题色：显式指定 > 设计系统 primary
+        t_color = slide_spec.get("title_color") or theme.get("primary")
+
+        # 背景：整页图片 > 渐变 > 纯色 > 设计系统默认底色
         bg_image = slide_spec.get("background_image")
         if bg_image:
             if isinstance(bg_image, dict):
@@ -486,6 +701,10 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
                 fill = slide.background.fill
                 fill.solid()
                 fill.fore_color.rgb = _rgb(bg)
+        elif theme.get("bg"):
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = _rgb(theme["bg"])
 
         shadow_targets = []  # 需要加文字阴影的形状（text_shadow 时生效）
 
@@ -495,12 +714,13 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
             shadow_targets.append(title_shape)
             title_shape.text = slide_spec["title"]
             default_title_size = 40 if layout_idx == 0 else 32
-            _apply_font(title_shape.text_frame.paragraphs[0],
-                        size=slide_spec.get("title_size", default_title_size),
-                        color=slide_spec.get("title_color"), bold=True)
-            for p in title_shape.text_frame.paragraphs[1:]:
+            for p in title_shape.text_frame.paragraphs:
                 _apply_font(p, size=slide_spec.get("title_size", default_title_size),
-                            color=slide_spec.get("title_color"), bold=True)
+                            color=t_color, bold=True)
+                if slide_spec.get("title_spacing"):
+                    for r in p.runs:
+                        r._r.get_or_add_rPr().set(
+                            "spc", str(int(float(slide_spec["title_spacing"]) * 100)))
 
         # 副标题（只认 SUBTITLE 类型占位符，避免误用正文占位符）
         if slide_spec.get("subtitle"):
@@ -509,7 +729,7 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
                     if ph.placeholder_format.type == PP_PLACEHOLDER.SUBTITLE:
                         ph.text = slide_spec["subtitle"]
                         for p in ph.text_frame.paragraphs:
-                            _apply_font(p, size=20, color=slide_spec.get("title_color"))
+                            _apply_font(p, size=20, color=t_color)
                         shadow_targets.append(ph)
                         break
                 except Exception:
@@ -523,14 +743,20 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
             tf.clear()
             bullet_size = slide_spec.get("bullet_size", 18)
             bullet_color = slide_spec.get("bullet_color")
-            for i, bullet in enumerate(slide_spec["bullets"]):
-                if i == 0:
+            for bi, bullet in enumerate(slide_spec["bullets"]):
+                if bi == 0:
                     p = tf.paragraphs[0]
                 else:
                     p = tf.add_paragraph()
                 p.text = str(bullet)
                 p.level = 0
                 _apply_font(p, size=bullet_size, color=bullet_color)
+                if slide_spec.get("bullet_spacing"):
+                    for r in p.runs:
+                        r._r.get_or_add_rPr().set(
+                            "spc", str(int(float(slide_spec["bullet_spacing"]) * 100)))
+                if slide_spec.get("bullet_line_spacing"):
+                    p.line_spacing = float(slide_spec["bullet_line_spacing"])
 
         # 文字阴影（照片背景上白字可读的关键；true=soft，也可 'soft'/'strong'）
         shadow = slide_spec.get("text_shadow")
@@ -539,24 +765,17 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
             for sh in shadow_targets:
                 _apply_text_shadow(sh, shadow_mode)
 
-        # 图片
+        # 图片（像素级定位；fit: stretch 拉伸 / cover 居中裁切填充 / contain 完整居中）
         if slide_spec.get("image"):
             ispec = slide_spec["image"]
             ipath = ispec.get("path", "")
             if not ipath or not os.path.exists(ipath):
                 raise ValueError(f"图片不存在: {ipath!r}")
-            pic_kwargs = {}
-            if ispec.get("width"):
-                pic_kwargs["width"] = Inches(ispec["width"])
-            if ispec.get("height"):
-                pic_kwargs["height"] = Inches(ispec["height"])
-            if not pic_kwargs:
-                pic_kwargs["width"] = Inches(4.0)
-            slide.shapes.add_picture(
-                ipath,
-                Inches(ispec.get("left", 0.5)),
-                Inches(ispec.get("top", 0.5)),
-                **pic_kwargs,
+            _add_image_fit(
+                slide, ipath,
+                ispec.get("left", 0.5), ispec.get("top", 0.5),
+                ispec.get("width"), ispec.get("height"),
+                ispec.get("fit", "stretch"),
             )
 
         # 表格
@@ -603,6 +822,9 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
         # 演讲者备注
         if slide_spec.get("notes"):
             slide.notes_slide.notes_text_frame.text = str(slide_spec["notes"])
+
+        # 统一页尾：视频 / 转场 / 设计系统 chrome
+        _apply_slide_tail(slide, slide_spec, spec, prs, i, theme)
 
     prs.save(output_path)
     return json.dumps({"success": True, "output": output_path, "slide_count": len(prs.slides)}, ensure_ascii=False)

@@ -169,26 +169,44 @@ def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标�
 
     Args:
         output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/演示.pptx
-        slides_json: 幻灯片 JSON 数组，每项支持字段:
-            layout: 0=标题页 1=标题+内容 6=空白页（默认）；"section"=章节扉页
-                （PART ONE 风格：巨号水印字+英文标签+强调线+大标题，
-                  配 section_word="01"、subtitle="PART ONE"、section_note="副说明"）
-            title: 标题文字（空白页自动加标题文本框）
-            subtitle: 副标题（仅标题页有效；section 页=英文标签）
-            bullets: 要点列表
-            background: 纯色背景 "#C8102E"，或渐变 {"colors":["#0d1b2a","#1b3a5c"],"angle":90}
-            background_image: "/a/b.jpg" 整页照片背景（cover 裁切），
-                或 {"path":"/a/b.jpg","scrim":"left"}（scrim 可读性暗角 left/right/bottom/dark/none，默认 left）
-            text_shadow: true 标题/副标题/要点加外阴影（true=soft，照片白字建议 "strong"）
-            title_color / title_size: 标题颜色 / 字号
-            bullet_color / bullet_size: 要点颜色 / 字号（默认 18）
-            image: {"path":"/a/b.png","left":1,"top":1,"width":4} 插图
-            notes: 演讲者备注
-            table: {"headers":[...],"rows":[[...]],"left":1.5,"top":2,"width":7,"height":3,"col_widths":[3.5,3.5]}
+        slides_json: 幻灯片 JSON 数组，或完整规格对象 {"theme": {...}, "transition": "fade", "slides": [...]}
+            deck 级:
+              theme: 设计系统 {"primary":"#C8102E","accent":"#FFD700","bg":"#F7F7F7",
+                      "font":"微软雅黑","header":"页眉","footer":"页脚","page_number":true,
+                      "chrome_color":"#666666"}（统一配色/字体/页眉/页脚/页码）
+              transition: 默认转场（19 种：fade/cut/zoom/push/wipe/cover/split/blinds/
+                      checkerboard/comb/circle/diamond/newsflash/plus/wedge/wheel/pull/
+                      randomBar/strips；对象 {type, dir, speed} 可选）
+            每页字段:
+              layout: 0=标题页 1=标题+内容 6=空白页（默认）；"section"=章节扉页
+                  （PART ONE 风格：巨号水印字+英文标签+强调线+大标题，
+                    配 section_word="01"、subtitle="PART ONE"、section_note="副说明"）
+              title: 标题文字（空白页自动加标题文本框）
+              subtitle: 副标题（仅标题页有效；section 页=英文标签）
+              bullets: 要点列表
+              background: 纯色背景 "#C8102E"，或渐变 {"colors":["#0d1b2a","#1b3a5c"],"angle":90}
+              background_image: "/a/b.jpg" 整页照片背景（cover 裁切），
+                  或 {"path":"/a/b.jpg","scrim":"left"}（scrim 暗化蒙版 left/right/bottom/dark/none，默认 left）
+              text_shadow: true 标题/副标题/要点加外阴影（true=soft，照片白字建议 "strong"）
+              title_color / title_size: 标题颜色 / 字号
+              title_spacing / bullet_spacing: 字间距（pt，spc 字体细节控制）
+              bullet_line_spacing: 要点行距倍数
+              bullet_color / bullet_size: 要点颜色 / 字号（默认 18）
+              image: {"path":"/a/b.png","left":1,"top":1,"width":4,"height":3,"fit":"cover"}
+                  像素级定位；fit: cover=居中裁切填充 / contain=完整居中 / stretch=拉伸
+              video: {"path":"/a/b.mp4","left":0,"top":0,"width":13.33,"height":7.5,
+                      "poster":"/a/b.png"} 视频嵌入（默认全屏，poster 缺省自动抽首帧）
+              transition: "push" 本页转场（覆盖 deck 级）
+              notes: 演讲者备注
+              table: {"headers":[...],"rows":[[...]],"left":1.5,"top":2,"width":7,"height":3,"col_widths":[3.5,3.5]}
         overwrite: 目标文件已存在时是否覆盖（默认 false，会报错提示）
     """
-    spec = {"output": output, "overwrite": overwrite}
-    spec["slides"] = json.loads(slides_json) if slides_json else []
+    data = json.loads(slides_json) if slides_json else []
+    if isinstance(data, dict):
+        spec = {"output": output, "overwrite": overwrite, **data}
+        spec.setdefault("slides", [])
+    else:
+        spec = {"output": output, "overwrite": overwrite, "slides": data}
     return _write_pptx(json.dumps(spec, ensure_ascii=False))
 
 
