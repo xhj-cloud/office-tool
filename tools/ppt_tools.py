@@ -9,9 +9,10 @@ from lxml import etree
 from pptx import Presentation
 from pptx.util import Inches, Pt, Cm, Emu
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.dml.color import RGBColor
-from pptx.oxml.ns import qn
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import nsdecls, qn
 from .json_repair import safe_parse_json
 
 
@@ -87,6 +88,217 @@ def _apply_font(paragraph, font_name: str = "微软雅黑", size: float = None,
             run.font.color.rgb = _rgb(color)
         if bold is not None:
             run.font.bold = bold
+
+
+# ── 视觉增强（照片背景 / 渐变 / 文字阴影，对标设计稿级模板）──────────────────
+
+def _set_slide_bg_xml(slide, bgpr_inner: str):
+    """设置幻灯片 <p:bg>（bgpr_inner 为 <p:bgPr> 内部 XML，须含填充）"""
+    cSld = slide._element.cSld
+    old = cSld.find(qn("p:bg"))
+    if old is not None:
+        cSld.remove(old)
+    bg = parse_xml(f'<p:bg {nsdecls("a", "p", "r")}>'
+                   f'<p:bgPr>{bgpr_inner}<a:effectLst/></p:bgPr></p:bg>')
+    cSld.insert(0, bg)
+
+
+def _set_background_image(slide, path: str):
+    """整页图片背景：cover 裁切（上下 9% 过溢，与参考设计稿同款手法）"""
+    if not path or not os.path.exists(path):
+        raise ValueError(f"background_image 图片不存在: {path!r}")
+    image_part, rId = slide.part.get_or_add_image_part(path)
+    inner = (f'<a:blipFill dpi="0" rotWithShape="1">'
+             f'<a:blip r:embed="{rId}"/>'
+             f'<a:srcRect/>'
+             f'<a:stretch><a:fillRect t="-9000" b="-9000"/></a:stretch>'
+             f'</a:blipFill>')
+    _set_slide_bg_xml(slide, inner)
+
+
+def _set_gradient_background(slide, colors, angle: float = 90):
+    """整页渐变背景。angle: 0=左→右，90=上→下（度）"""
+    if not colors or len(colors) < 2:
+        raise ValueError("渐变背景需要至少 2 个颜色，"
+                         "如 background: {\"colors\": [\"#0d1b2a\", \"#1b3a5c\"], \"angle\": 90}")
+    n = len(colors) - 1
+    gs = "".join(f'<a:gs pos="{int(100000 * i / n)}">'
+                 f'<a:srgbClr val="{str(_rgb(c)).upper()}"/></a:gs>'
+                 for i, c in enumerate(colors))
+    inner = (f'<a:gradFill rotWithShape="1"><a:gsLst>{gs}</a:gsLst>'
+             f'<a:lin ang="{int(angle * 60000)}" scaled="1"/></a:gradFill>')
+    _set_slide_bg_xml(slide, inner)
+
+
+def _replace_shape_fill_with_gradient(shape, gs_xml: str, angle: float = 0):
+    """把形状当前的 solidFill 原位替换为渐变填充（保持 spPr 内元素顺序合法）"""
+    grad = parse_xml(f'<a:gradFill {nsdecls("a")} rotWithShape="1">'
+                     f'<a:gsLst>{gs_xml}</a:gsLst>'
+                     f'<a:lin ang="{int(angle * 60000)}" scaled="1"/></a:gradFill>')
+    spPr = shape.fill._xPr
+    solid = spPr.find(qn("a:solidFill"))
+    if solid is None:
+        raise ValueError("形状需要先有 solidFill 才能替换为渐变")
+    spPr.replace(solid, grad)
+
+
+def _add_scrim(slide, prs, direction: str = "left"):
+    """图片背景上的可读性暗角（黑色渐变渐隐，参考设计稿同款）
+
+    left/right/bottom: 对应方向的黑色渐变遮罩；dark: 全页 35% 黑底
+    """
+    w, h = prs.slide_width, prs.slide_height
+    if direction == "dark":
+        shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, w, h)
+        shape.line.fill.background()
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        clr = shape.fill._xPr.find(qn("a:solidFill")).find(qn("a:srgbClr"))
+        etree.SubElement(clr, qn("a:alpha")).set("val", "35000")
+        return shape
+    if direction == "left":
+        rect, ang, dark_first = (0, 0, int(w * 0.62), h), 0, True
+    elif direction == "right":
+        rect, ang, dark_first = (int(w * 0.38), 0, int(w * 0.62), h), 10800000, True
+    elif direction == "bottom":
+        rect, ang, dark_first = (0, int(h * 0.45), w, int(h * 0.55)), 5400000, False
+    else:
+        raise ValueError(f"scrim 只支持 left/right/bottom/dark，收到 {direction!r}")
+    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, *rect)
+    shape.line.fill.background()
+    shape.fill.solid()
+    dark = '<a:gs pos="0"><a:srgbClr val="000000"><a:alpha val="72000"/></a:srgbClr></a:gs>'
+    clear = '<a:gs pos="100000"><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:gs>'
+    gs = (dark + clear) if dark_first else (clear + dark)
+    _replace_shape_fill_with_gradient(shape, gs, ang / 60000)
+    return shape
+
+
+def _apply_text_shadow(shape, mode: str = "soft"):
+    """给形状内所有 run 加外阴影（参考设计稿白字在照片上可读的关键）
+
+    soft:   轻微漂浮感（blur 3pt / 30% 黑）
+    strong: 照片上白字专用（blur 24pt / 57% 黑）
+    """
+    if mode == "strong":
+        attrs, alpha = ('blurRad="241300" dist="38100" dir="5400000" '
+                        'algn="tl" rotWithShape="0"'), "57000"
+    elif mode == "soft":
+        attrs, alpha = ('blurRad="38100" dist="22860" dir="5400000" '
+                        'algn="tl" rotWithShape="0"'), "30000"
+    else:
+        raise ValueError(f"text_shadow 只支持 true/'soft'/'strong'，收到 {mode!r}")
+    shadow = (f'<a:effectLst {nsdecls("a")}>'
+              f'<a:outerShdw {attrs}>'
+              f'<a:srgbClr val="000000"><a:alpha val="{alpha}"/></a:srgbClr>'
+              f'</a:outerShdw></a:effectLst>')
+    for para in shape.text_frame.paragraphs:
+        for run in para.runs:
+            rPr = run._r.get_or_add_rPr()
+            for old in rPr.findall(qn("a:effectLst")):
+                rPr.remove(old)
+            el = parse_xml(shadow)
+            anchor = None
+            for tag in ("a:highlight", "a:uLn", "a:uFill", "a:latin", "a:ea", "a:cs"):
+                anchor = rPr.find(qn(tag))
+                if anchor is not None:
+                    break
+            if anchor is not None:
+                anchor.addprevious(el)
+            else:
+                rPr.append(el)
+
+
+def _set_run_alpha(run, pct: float):
+    """设置 run 文字颜色的不透明度（pct: 0~100，如 12 = 12% 可见度）"""
+    if run.font.color is None or run.font.color.type is None:
+        return
+    clr = run.font.color._xFill.find(qn("a:srgbClr"))
+    if clr is None:
+        return
+    for a in clr.findall(qn("a:alpha")):
+        clr.remove(a)
+    etree.SubElement(clr, qn("a:alpha")).set("val", str(int(pct * 1000)))
+
+
+def _build_section_slide(slide, prs, slide_spec: dict):
+    """章节扉页（PART ONE 风格）：巨号水印字 + 宽字距英文标签 + 强调线 + 大标题"""
+    w_in = Emu(prs.slide_width).inches
+
+    # 1) 背景：优先 background_image，其次渐变，最后默认深蓝渐变
+    bg_image = slide_spec.get("background_image")
+    if bg_image:
+        if isinstance(bg_image, dict):
+            _set_background_image(slide, bg_image.get("path", ""))
+            scrim = bg_image.get("scrim", "left")
+        else:
+            _set_background_image(slide, bg_image)
+            scrim = "left"
+        if scrim and scrim != "none":
+            _add_scrim(slide, prs, scrim)
+    else:
+        bg = slide_spec.get("background")
+        if isinstance(bg, dict):
+            _set_gradient_background(slide, bg.get("colors", ["#0d1b2a", "#1b3a5c"]),
+                                     bg.get("angle", 90))
+        elif isinstance(bg, str):
+            fill = slide.background.fill
+            fill.solid()
+            fill.fore_color.rgb = _rgb(bg)
+        else:
+            _set_gradient_background(slide, ["#0d1b2a", "#1b3a5c"], 90)
+
+    shadow = slide_spec.get("text_shadow", True)
+    shadow_mode = "soft" if shadow is True else str(shadow)
+    left_in = 0.95
+
+    # 2) 巨号水印字（右侧，白色 12% 透明感）
+    tb_word = slide.shapes.add_textbox(Inches(w_in * 0.48), Inches(1.0),
+                                       Inches(w_in * 0.48), Inches(5.5))
+    tb_word.text_frame.word_wrap = True
+    p = tb_word.text_frame.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    p.text = str(slide_spec.get("section_word") or "01")
+    _apply_font(p, size=150, color="#FFFFFF", bold=True)
+    _set_run_alpha(p.runs[0], 12)
+
+    # 3) 英文标签（宽字距）
+    tb_label = slide.shapes.add_textbox(Inches(left_in), Inches(2.4),
+                                        Inches(7.0), Inches(0.5))
+    p2 = tb_label.text_frame.paragraphs[0]
+    p2.text = str(slide_spec.get("subtitle") or "PART").upper()
+    _apply_font(p2, size=14, color="#FFFFFF")
+    _set_run_alpha(p2.runs[0], 75)
+    p2.runs[0]._r.get_or_add_rPr().set("spc", "500")  # 5pt 字距
+
+    # 4) 白色强调线
+    bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE,
+                                 Inches(left_in + 0.02), Inches(3.08),
+                                 Inches(0.85), Inches(0.05))
+    bar.line.fill.background()
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+    # 5) 中文大标题
+    tb_title = slide.shapes.add_textbox(Inches(left_in), Inches(3.4),
+                                        Inches(9.8), Inches(1.7))
+    p3 = tb_title.text_frame.paragraphs[0]
+    p3.text = str(slide_spec.get("title") or "")
+    _apply_font(p3, size=44, color="#FFFFFF", bold=True)
+
+    # 6) 可选副说明
+    if slide_spec.get("section_note"):
+        tb_note = slide.shapes.add_textbox(Inches(left_in), Inches(5.1),
+                                           Inches(9.0), Inches(0.6))
+        p4 = tb_note.text_frame.paragraphs[0]
+        p4.text = str(slide_spec["section_note"])
+        _apply_font(p4, size=16, color="#FFFFFF")
+        _set_run_alpha(p4.runs[0], 60)
+
+    # 7) 文字阴影（照片背景上白字可读的关键）
+    for sh in (tb_word, tb_label, tb_title):
+        _apply_text_shadow(sh, shadow_mode)
+    return slide
 
 
 def read_pptx(file_path: str, mode: str = "full") -> str:
@@ -170,10 +382,19 @@ def write_pptx(spec_json: str) -> str:
         "slides": [
             {
                 "layout": 0,        // 0=标题页 1=标题+内容 6=空白（默认）
+                                    // "section"=章节扉页（PART ONE 风格：巨号水印字+英文标签+强调线+大标题，
+                                    //   配 section_word="01"、subtitle="PART ONE"、section_note="副说明"）
                 "title": "标题文字",            // 无标题占位符时自动加文本框
-                "subtitle": "副标题",           // 仅标题页（layout 0）有效
+                "subtitle": "副标题",           // 仅标题页（layout 0）有效；section 页=英文标签
                 "bullets": ["要点1", "要点2", "要点3"],
-                "background": "#C8102E",        // 背景色（十六进制，可带 #）
+                "background": "#C8102E",        // 纯色背景（十六进制，可带 #）
+                // 或渐变背景: "background": {"colors": ["#0d1b2a", "#1b3a5c"], "angle": 90}
+                //   （angle: 0=左→右，90=上→下；section 页缺省默认深蓝渐变）
+                "background_image": "/a/b/c.jpg",  // 整页照片背景（cover 裁切，设计稿级观感的关键）
+                //   或对象形式: {"path": "/a/b/c.jpg", "scrim": "left"}
+                //   scrim: 照片上文字可读性暗角 left/right/bottom/dark/none（默认 left）
+                "text_shadow": true,           // 标题/副标题/要点加外阴影（true=soft，
+                //   照片上白字建议 "strong"；参考设计稿同款文字处理）
                 "title_color": "#FFD700",       // 标题颜色
                 "title_size": 40,               // 标题字号（默认：标题页 40，其他 32）
                 "bullet_color": "#333333",      // 要点颜色
@@ -230,21 +451,48 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
     for slide_spec in spec["slides"]:
         if not isinstance(slide_spec, dict):
             raise ValueError(f"slides 每项必须是对象，收到: {slide_spec!r}")
-        layout_idx = slide_spec.get("layout", 6)
-        if layout_idx not in layout_map:
-            raise ValueError(f"layout 只支持 0（标题页）/ 1（标题+内容）/ 6（空白），收到 {layout_idx}")
-        layout_idx = layout_map[layout_idx]
+
+        # 章节扉页（PART ONE 风格）
+        layout_key = slide_spec.get("layout", 6)
+        if isinstance(layout_key, str) and layout_key in ("section", "part", "divider"):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _build_section_slide(slide, prs, slide_spec)
+            if slide_spec.get("notes"):
+                slide.notes_slide.notes_text_frame.text = str(slide_spec["notes"])
+            continue
+
+        if layout_key not in layout_map:
+            raise ValueError(f"layout 只支持 0（标题页）/ 1（标题+内容）/ 6（空白）/ "
+                             f"'section'（章节扉页），收到 {layout_key!r}")
+        layout_idx = layout_map[layout_key]
         slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-        # 背景色
-        if slide_spec.get("background"):
-            fill = slide.background.fill
-            fill.solid()
-            fill.fore_color.rgb = _rgb(slide_spec["background"])
+        # 背景：整页图片 > 渐变 > 纯色
+        bg_image = slide_spec.get("background_image")
+        if bg_image:
+            if isinstance(bg_image, dict):
+                _set_background_image(slide, bg_image.get("path", ""))
+                scrim = bg_image.get("scrim", "left")
+            else:
+                _set_background_image(slide, bg_image)
+                scrim = "left"
+            if scrim and scrim != "none":
+                _add_scrim(slide, prs, scrim)
+        elif slide_spec.get("background"):
+            bg = slide_spec["background"]
+            if isinstance(bg, dict):
+                _set_gradient_background(slide, bg.get("colors"), bg.get("angle", 90))
+            else:
+                fill = slide.background.fill
+                fill.solid()
+                fill.fore_color.rgb = _rgb(bg)
+
+        shadow_targets = []  # 需要加文字阴影的形状（text_shadow 时生效）
 
         # 标题（无标题占位符时自动加文本框，不再静默丢弃）
         if slide_spec.get("title"):
             title_shape = slide.shapes.title or _add_title_textbox(slide, prs)
+            shadow_targets.append(title_shape)
             title_shape.text = slide_spec["title"]
             default_title_size = 40 if layout_idx == 0 else 32
             _apply_font(title_shape.text_frame.paragraphs[0],
@@ -262,6 +510,7 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
                         ph.text = slide_spec["subtitle"]
                         for p in ph.text_frame.paragraphs:
                             _apply_font(p, size=20, color=slide_spec.get("title_color"))
+                        shadow_targets.append(ph)
                         break
                 except Exception:
                     continue
@@ -269,6 +518,7 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
         # 要点（无正文占位符时自动添加文本框，不再静默丢弃）
         if slide_spec.get("bullets"):
             body_shape = _find_body_shape(slide) or _add_body_textbox(slide, prs)
+            shadow_targets.append(body_shape)
             tf = body_shape.text_frame
             tf.clear()
             bullet_size = slide_spec.get("bullet_size", 18)
@@ -281,6 +531,13 @@ def _write_pptx_impl(spec: dict, output_path: str) -> str:
                 p.text = str(bullet)
                 p.level = 0
                 _apply_font(p, size=bullet_size, color=bullet_color)
+
+        # 文字阴影（照片背景上白字可读的关键；true=soft，也可 'soft'/'strong'）
+        shadow = slide_spec.get("text_shadow")
+        if shadow:
+            shadow_mode = "soft" if shadow is True else str(shadow)
+            for sh in shadow_targets:
+                _apply_text_shadow(sh, shadow_mode)
 
         # 图片
         if slide_spec.get("image"):

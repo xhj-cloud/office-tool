@@ -170,11 +170,16 @@ def write_pptx(output: str, slides_json: str = "[{\"layout\":0,\"title\":\"标�
     Args:
         output: 输出文件完整路径（必填），如 /Users/xxx/Desktop/演示.pptx
         slides_json: 幻灯片 JSON 数组，每项支持字段:
-            layout: 0=标题页 1=标题+内容 6=空白页（默认）
+            layout: 0=标题页 1=标题+内容 6=空白页（默认）；"section"=章节扉页
+                （PART ONE 风格：巨号水印字+英文标签+强调线+大标题，
+                  配 section_word="01"、subtitle="PART ONE"、section_note="副说明"）
             title: 标题文字（空白页自动加标题文本框）
-            subtitle: 副标题（仅标题页有效）
+            subtitle: 副标题（仅标题页有效；section 页=英文标签）
             bullets: 要点列表
-            background: 背景色，如 "#C8102E"
+            background: 纯色背景 "#C8102E"，或渐变 {"colors":["#0d1b2a","#1b3a5c"],"angle":90}
+            background_image: "/a/b.jpg" 整页照片背景（cover 裁切），
+                或 {"path":"/a/b.jpg","scrim":"left"}（scrim 可读性暗角 left/right/bottom/dark/none，默认 left）
+            text_shadow: true 标题/副标题/要点加外阴影（true=soft，照片白字建议 "strong"）
             title_color / title_size: 标题颜色 / 字号
             bullet_color / bullet_size: 要点颜色 / 字号（默认 18）
             image: {"path":"/a/b.png","left":1,"top":1,"width":4} 插图
