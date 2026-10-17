@@ -362,11 +362,17 @@ def _add_image_fit(slide, ipath, left, top, bw, bh, fit="stretch"):
 
 
 def _ffmpeg_candidates():
-    """ffmpeg 候选：系统 PATH 优先，imageio-ffmpeg 静态二进制兜底（去重）"""
+    """ffmpeg 候选（逐个尝试直到成功，去重）：
+    系统 PATH → 常见用户安装位置 → imageio-ffmpeg 静态二进制兜底"""
     out = []
     f = shutil.which("ffmpeg")
     if f:
         out.append(f)
+    for p in (os.path.expanduser("~/.local/bin/ffmpeg"),
+              "/opt/homebrew/bin/ffmpeg",
+              "/usr/local/bin/ffmpeg"):
+        if os.path.exists(p):
+            out.append(p)
     try:
         import imageio_ffmpeg
         out.append(imageio_ffmpeg.get_ffmpeg_exe())
